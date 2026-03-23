@@ -35,9 +35,9 @@ type BLEConfig struct {
 
 // PublishConfig — настройки публикации
 type PublishConfig struct {
-	Mode          string `yaml:"mode" json:"mode"`                     // espruinohub, homed, both
-	BasePrefix    string `yaml:"base_prefix" json:"base_prefix"`       // базовый префикс топиков
-	RetainPresence bool  `yaml:"retain_presence" json:"retain_presence"` // retain для presence
+	Mode           string `yaml:"mode" json:"mode"`                       // espruinohub, homed, both
+	BasePrefix     string `yaml:"base_prefix" json:"base_prefix"`         // базовый префикс топиков
+	RetainPresence bool   `yaml:"retain_presence" json:"retain_presence"` // retain для presence
 }
 
 // DiscoveryConfig — настройки Home Assistant MQTT Discovery
@@ -54,8 +54,8 @@ type HistoryConfig struct {
 
 // WebConfig — настройки веб-сервера
 type WebConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Port    int    `yaml:"port" json:"port"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	Port    int  `yaml:"port" json:"port"`
 }
 
 // LogConfig — настройки логирования
@@ -65,16 +65,16 @@ type LogConfig struct {
 
 // Device — информация об устройстве
 type Device struct {
-	MAC            string                 `json:"mac"`
-	Name           string                 `json:"name,omitempty"`
-	RSSI           int                    `json:"rssi"`
-	LastSeen       time.Time              `json:"last_seen"`
-	Online         bool                   `json:"online"`
-	Battery        *int                   `json:"battery,omitempty"`
-	Manufacturer   map[string]interface{} `json:"manufacturer,omitempty"`
-	ServiceData    map[string]interface{} `json:"service_data,omitempty"`
-	ParsedValues   map[string]ParsedValue `json:"parsed_values,omitempty"`
-	
+	MAC          string                 `json:"mac"`
+	Name         string                 `json:"name,omitempty"`
+	RSSI         int                    `json:"rssi"`
+	LastSeen     time.Time              `json:"last_seen"`
+	Online       bool                   `json:"online"`
+	Battery      *int                   `json:"battery,omitempty"`
+	Manufacturer map[string]interface{} `json:"manufacturer,omitempty"`
+	ServiceData  map[string]interface{} `json:"service_data,omitempty"`
+	ParsedValues map[string]ParsedValue `json:"parsed_values,omitempty"`
+
 	// Внутренние поля
 	mu             sync.RWMutex
 	historyBuffers map[string]*HistoryRing
@@ -84,7 +84,7 @@ type Device struct {
 type ParsedValue struct {
 	Value     interface{} `json:"value"`
 	Unit      string      `json:"unit,omitempty"`
-	Type      string      `json:"type"` // temp, humidity, battery, pressure, etc.
+	Type      string      `json:"type"`   // temp, humidity, battery, pressure, etc.
 	Source    string      `json:"source"` // manufacturer, service_data, gatt
 	Timestamp time.Time   `json:"timestamp"`
 }
@@ -107,12 +107,12 @@ type ServiceData struct {
 
 // Command — команда, полученная через MQTT
 type Command struct {
-	Type      string // write, read, notify, ping
-	MAC       string
-	Service   string
-	Char      string
-	Payload   []byte
-	Topic     string
+	Type    string // write, read, notify, ping
+	MAC     string
+	Service string
+	Char    string
+	Payload []byte
+	Topic   string
 }
 
 // HistoryPoint — точка данных для истории
@@ -123,22 +123,22 @@ type HistoryPoint struct {
 
 // HistoryRing — кольцевой буфер для хранения истории
 type HistoryRing struct {
-	Points    []HistoryPoint
-	Size      int
-	Index     int
-	Full      bool
-	mu        sync.Mutex
+	Points []HistoryPoint
+	Size   int
+	Index  int
+	Full   bool
+	mu     sync.Mutex
 }
 
 // DeviceExpose — информация для топика expose в HOMEd стиле
 type DeviceExpose struct {
-	Type        string      `json:"type"`        // sensor, binary_sensor, switch
-	Name        string      `json:"name"`
-	Property    string      `json:"property"`    // temp, humidity, battery
-	Unit        string      `json:"unit,omitempty"`
-	Min         *float64    `json:"min,omitempty"`
-	Max         *float64    `json:"max,omitempty"`
-	Values      []string    `json:"values,omitempty"` // для enum типов
+	Type     string   `json:"type"` // sensor, binary_sensor, switch
+	Name     string   `json:"name"`
+	Property string   `json:"property"` // temp, humidity, battery
+	Unit     string   `json:"unit,omitempty"`
+	Min      *float64 `json:"min,omitempty"`
+	Max      *float64 `json:"max,omitempty"`
+	Values   []string `json:"values,omitempty"` // для enum типов
 }
 
 // NewDevice — создание нового устройства
@@ -190,20 +190,20 @@ func (d *Device) GetParsedValues() map[string]ParsedValue {
 func (d *Device) GetFDFlat() map[string]interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	result := make(map[string]interface{})
 	result["rssi"] = d.RSSI
-	
+
 	if d.Battery != nil {
 		result["battery"] = *d.Battery
 	}
-	
+
 	for key, val := range d.ParsedValues {
 		if val.Value != nil {
 			result[key] = val.Value
 		}
 	}
-	
+
 	return result
 }
 
@@ -211,7 +211,7 @@ func (d *Device) GetFDFlat() map[string]interface{} {
 func (d *Device) GetExposeList() []DeviceExpose {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	exposes := []DeviceExpose{
 		{
 			Type:     "sensor",
@@ -220,7 +220,7 @@ func (d *Device) GetExposeList() []DeviceExpose {
 			Unit:     "dBm",
 		},
 	}
-	
+
 	if d.Battery != nil {
 		exposes = append(exposes, DeviceExpose{
 			Type:     "sensor",
@@ -231,7 +231,7 @@ func (d *Device) GetExposeList() []DeviceExpose {
 			Max:      floatPtr(100),
 		})
 	}
-	
+
 	for key, val := range d.ParsedValues {
 		expose := DeviceExpose{
 			Type:     "sensor",
@@ -239,7 +239,7 @@ func (d *Device) GetExposeList() []DeviceExpose {
 			Property: key,
 			Unit:     val.Unit,
 		}
-		
+
 		switch val.Type {
 		case "temp":
 			expose.Name = "Temperature"
@@ -264,10 +264,10 @@ func (d *Device) GetExposeList() []DeviceExpose {
 				expose.Unit = "lx"
 			}
 		}
-		
+
 		exposes = append(exposes, expose)
 	}
-	
+
 	return exposes
 }
 

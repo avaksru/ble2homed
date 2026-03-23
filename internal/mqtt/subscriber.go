@@ -29,10 +29,10 @@ type CommandHandler interface {
 // NewSubscriber — создание нового subscriber
 func NewSubscriber(client *Client, publisher *Publisher, base string, logger zerolog.Logger) *Subscriber {
 	return &Subscriber{
-		client:   client,
+		client:    client,
 		publisher: publisher,
-		base:     base,
-		logger:   logger.With().Str("component", "subscriber").Logger(),
+		base:      base,
+		logger:    logger.With().Str("component", "subscriber").Logger(),
 	}
 }
 
@@ -100,8 +100,8 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 	}
 
 	topics := map[string]byte{
-		fmt.Sprintf("%s/td/+/write/+/+", s.base): 1,
-		fmt.Sprintf("%s/td/+/read/+/+", s.base):  1,
+		fmt.Sprintf("%s/td/+/write/+/+", s.base):  1,
+		fmt.Sprintf("%s/td/+/read/+/+", s.base):   1,
 		fmt.Sprintf("%s/td/+/notify/+/+", s.base): 1,
 		fmt.Sprintf("%s/td/+/ping", s.base):       1,
 	}

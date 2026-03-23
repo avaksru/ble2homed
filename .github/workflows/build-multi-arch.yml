@@ -62,7 +62,7 @@ permissions:
 # =============================================================================
 env:
   GO_VERSION: '1.22'
-  BINARY_NAME: picoclaw
+  BINARY_NAME: ble2homed
 
 # =============================================================================
 # Матрица поддерживаемых платформ
@@ -215,7 +215,7 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X main.version=${VERSION}" \
             -o "${OUTPUT_NAME}" \
-            .
+            ./cmd/ble2homed
 
           # Выводим информацию о бинарнике
           echo "::group::Binary info"
@@ -226,8 +226,8 @@ jobs:
       - name: Create checksums
         run: |
           cd "${{ github.workspace }}"
-          # Создаём SHA256-суммы для всех picoclaw-* файлов
-          sha256sum picoclaw-* > checksums-${{ matrix.artifact_suffix }}.sha256
+          # Создаём SHA256-суммы для всех ble2homed-* файлов
+          sha256sum ble2homed-* > checksums-${{ matrix.artifact_suffix }}.sha256
           echo "::group::SHA256 checksums"
           cat checksums-${{ matrix.artifact_suffix }}.sha256
           echo "::endgroup::"
@@ -251,7 +251,7 @@ jobs:
         with:
           name: artifact-${{ matrix.artifact_suffix }}
           path: |
-            picoclaw-${{ matrix.artifact_suffix }}.tar.gz
+            ble2homed-${{ matrix.artifact_suffix }}.tar.gz
             checksums-${{ matrix.artifact_suffix }}.sha256
           retention-days: 30
 
@@ -321,7 +321,7 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.release-info.outputs.tag, '-rc') || contains(steps.release-info.outputs.tag, '-beta') || contains(steps.release-info.outputs.tag, '-alpha') }}
           body: |
-            ## picoclaw ${{ steps.release-info.outputs.tag }}
+            ## ble2homed ${{ steps.release-info.outputs.tag }}
 
             Multi-architecture build for Linux and macOS.
 
@@ -343,8 +343,8 @@ jobs:
 
             ```bash
             # Download and extract (example for linux-amd64)
-            tar xzf picoclaw-linux-amd64.tar.gz
-            sudo install -m 755 picoclaw-linux-amd64 /usr/local/bin/picoclaw
+            tar xzf ble2homed-linux-amd64.tar.gz
+            sudo install -m 755 ble2homed-linux-amd64 /usr/local/bin/ble2homed
             ```
           files: |
             release-files/*

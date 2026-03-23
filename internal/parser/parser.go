@@ -16,12 +16,12 @@ const (
 	ServiceBattery     = "180F"
 	ServiceTemperature = "1809"
 	ServiceHumidity    = "181A"
-	
-	CharBatteryLevel   = "2A19"
-	CharTemperature    = "2A6E"
-	CharHumidity       = "2A6F"
-	CharPressure       = "2A6D"
-	
+
+	CharBatteryLevel = "2A19"
+	CharTemperature  = "2A6E"
+	CharHumidity     = "2A6F"
+	CharPressure     = "2A6D"
+
 	// Espruino/Puck.js company ID
 	CompanyEspruino = 0x0590
 )
@@ -35,7 +35,7 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	if len(adv.Manufacturer) >= 2 {
 		companyID := binary.LittleEndian.Uint16(adv.Manufacturer[0:2])
 		companyHex := fmt.Sprintf("%04X", companyID)
-		
+
 		// Espruino/Puck.js JSON5 парсинг
 		if int(companyID) == CompanyEspruino && len(adv.Manufacturer) > 2 {
 			parsed := parseEspruinoJSON(adv.Manufacturer[2:], now)
@@ -43,7 +43,7 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 				result[k] = v
 			}
 		}
-		
+
 		// Сохраняем raw manufacturer data
 		result["manufacturer/"+companyHex] = types.ParsedValue{
 			Value:     hex.EncodeToString(adv.Manufacturer),
@@ -56,7 +56,7 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	// Парсинг service data
 	for _, sd := range adv.ServiceData {
 		uuid := strings.ToUpper(sd.UUID)
-		
+
 		// Известные сервисы
 		switch uuid {
 		case ServiceTemperature:
@@ -96,7 +96,7 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 				result[k] = v
 			}
 		}
-		
+
 		// Сохраняем raw service data
 		result["service/"+uuid] = types.ParsedValue{
 			Value:     parseServiceDataToJSON(sd.Data),
@@ -127,13 +127,13 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 // Формат: {"t":22.4,"h":54} или {"temp":22.4}
 func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue)
-	
+
 	// Преобразуем в строку и пытаемся найти известные паттерны
 	str := string(data)
-	
+
 	// Простой парсинг ключевых значений
 	pairs := extractKeyValuePairs(str)
-	
+
 	for key, value := range pairs {
 		switch strings.ToLower(key) {
 		case "t", "temp", "temperature":
@@ -188,19 +188,19 @@ func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue 
 			}
 		}
 	}
-	
+
 	return result
 }
 
 // extractKeyValuePairs — простое извлечение пар ключ:значение из JSON-подобной строки
 func extractKeyValuePairs(s string) map[string]string {
 	result := make(map[string]string)
-	
+
 	// Удаляем пробелы и фигурные скобки
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "{")
 	s = strings.TrimSuffix(s, "}")
-	
+
 	// Разделяем по запятым
 	pairs := strings.Split(s, ",")
 	for _, pair := range pairs {
@@ -214,7 +214,7 @@ func extractKeyValuePairs(s string) map[string]string {
 			result[key] = value
 		}
 	}
-	
+
 	return result
 }
 
@@ -224,10 +224,10 @@ func parseTemperature(data []byte) (float64, bool) {
 	if len(data) < 2 {
 		return 0, false
 	}
-	
+
 	raw := int16(binary.LittleEndian.Uint16(data[0:2]))
 	temp := float64(raw) / 10.0
-	
+
 	return temp, true
 }
 
@@ -237,10 +237,10 @@ func parseHumidity(data []byte) (float64, bool) {
 	if len(data) < 2 {
 		return 0, false
 	}
-	
+
 	raw := binary.LittleEndian.Uint16(data[0:2])
 	humidity := float64(raw) / 100.0
-	
+
 	return humidity, true
 }
 
@@ -250,14 +250,14 @@ func parseBattery(data []byte) (int, bool) {
 	if len(data) < 1 {
 		return 0, false
 	}
-	
+
 	return int(data[0]), true
 }
 
 // parseServiceDataByUUID — попытка распарсить service data по UUID характеристики
 func parseServiceDataByUUID(uuid string, data []byte, now time.Time) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue)
-	
+
 	switch uuid {
 	case CharTemperature:
 		if temp, ok := parseTemperature(data); ok {
@@ -291,7 +291,7 @@ func parseServiceDataByUUID(uuid string, data []byte, now time.Time) map[string]
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -299,15 +299,15 @@ func parseServiceDataByUUID(uuid string, data []byte, now time.Time) map[string]
 func parseEddystone(adv types.Advertisement) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue)
 	now := time.Now()
-	
+
 	// Eddystone использует service UUID 0xFEAA
 	for _, sd := range adv.ServiceData {
 		if !strings.EqualFold(sd.UUID, "FEAA") || len(sd.Data) < 2 {
 			continue
 		}
-		
+
 		frameType := sd.Data[0]
-		
+
 		switch frameType {
 		case 0x10: // Eddystone-URL
 			if len(sd.Data) > 1 {
@@ -319,7 +319,7 @@ func parseEddystone(adv types.Advertisement) map[string]types.ParsedValue {
 					Source:    "eddystone",
 					Timestamp: now,
 				}
-				
+
 				if url := decodeEddystoneURL(sd.Data[2:]); url != "" {
 					result["eddystone_url"] = types.ParsedValue{
 						Value:     url,
@@ -346,7 +346,7 @@ func parseEddystone(adv types.Advertisement) map[string]types.ParsedValue {
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -355,7 +355,7 @@ func decodeEddystoneURL(data []byte) string {
 	if len(data) < 1 {
 		return ""
 	}
-	
+
 	// Схемы URL
 	schemes := []string{
 		"http://www.",
@@ -363,20 +363,20 @@ func decodeEddystoneURL(data []byte) string {
 		"http://",
 		"https://",
 	}
-	
+
 	// Расширения
 	extensions := []string{
 		".com/", ".org/", ".edu/", ".net/", ".info/", ".biz/", ".gov/",
 		".com", ".org", ".edu", ".net", ".info", ".biz", ".gov",
 	}
-	
+
 	schemeIdx := int(data[0])
 	if schemeIdx >= len(schemes) {
 		return ""
 	}
-	
+
 	url := schemes[schemeIdx]
-	
+
 	for i := 1; i < len(data); i++ {
 		b := data[i]
 		if b < byte(len(extensions)) {
@@ -385,7 +385,7 @@ func decodeEddystoneURL(data []byte) string {
 			url += string(b)
 		}
 	}
-	
+
 	return url
 }
 
@@ -393,22 +393,22 @@ func decodeEddystoneURL(data []byte) string {
 func parseIBeacon(adv types.Advertisement) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue)
 	now := time.Now()
-	
+
 	if len(adv.Manufacturer) < 25 {
 		return result
 	}
-	
+
 	// Apple company ID = 0x004C
 	companyID := binary.LittleEndian.Uint16(adv.Manufacturer[0:2])
 	if companyID != 0x004C {
 		return result
 	}
-	
+
 	// iBeacon type = 0x02, length = 0x15
 	if adv.Manufacturer[2] != 0x02 || adv.Manufacturer[3] != 0x15 {
 		return result
 	}
-	
+
 	// UUID (16 bytes)
 	uuid := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		binary.BigEndian.Uint32(adv.Manufacturer[4:8]),
@@ -416,14 +416,14 @@ func parseIBeacon(adv types.Advertisement) map[string]types.ParsedValue {
 		binary.BigEndian.Uint16(adv.Manufacturer[10:12]),
 		adv.Manufacturer[12:14],
 		adv.Manufacturer[14:20])
-	
+
 	// Major, Minor
 	major := binary.BigEndian.Uint16(adv.Manufacturer[20:22])
 	minor := binary.BigEndian.Uint16(adv.Manufacturer[22:24])
-	
+
 	// TX Power
 	txPower := int8(adv.Manufacturer[24])
-	
+
 	result["ibeacon_uuid"] = types.ParsedValue{
 		Value:     uuid,
 		Type:      "uuid",
@@ -449,7 +449,7 @@ func parseIBeacon(adv types.Advertisement) map[string]types.ParsedValue {
 		Source:    "ibeacon",
 		Timestamp: now,
 	}
-	
+
 	return result
 }
 
@@ -458,12 +458,12 @@ func parseServiceDataToJSON(data []byte) interface{} {
 	if len(data) == 0 {
 		return nil
 	}
-	
+
 	// Если данные выглядят как текст, возвращаем как строку
 	if isPrintable(data) {
 		return string(data)
 	}
-	
+
 	// Иначе возвращаем hex
 	return hex.EncodeToString(data)
 }
@@ -495,12 +495,12 @@ func isPrintable(data []byte) bool {
 // Поддерживает hex, строку, числа, JSON
 func ParseCommandPayload(payload string) ([]byte, error) {
 	payload = strings.TrimSpace(payload)
-	
+
 	// Попытка парсинга как hex строки
 	if isHexString(payload) {
 		return hex.DecodeString(strings.TrimPrefix(payload, "0x"))
 	}
-	
+
 	// Попытка парсинга как число
 	if f, ok := parseFloat(payload); ok {
 		// Преобразуем в bytes в зависимости от типа
@@ -508,7 +508,7 @@ func ParseCommandPayload(payload string) ([]byte, error) {
 		binary.LittleEndian.PutUint32(buf, math.Float32bits(float32(f)))
 		return buf, nil
 	}
-	
+
 	// Как строка
 	return []byte(payload), nil
 }

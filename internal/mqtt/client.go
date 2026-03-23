@@ -11,13 +11,13 @@ import (
 
 // Client — MQTT клиент
 type Client struct {
-	config     *MQTTConfig
-	logger     zerolog.Logger
-	client     mqtt.Client
-	mu         sync.RWMutex
-	connected  bool
-	onConnect  func()
-	onMessage  func(topic string, payload []byte)
+	config    *MQTTConfig
+	logger    zerolog.Logger
+	client    mqtt.Client
+	mu        sync.RWMutex
+	connected bool
+	onConnect func()
+	onMessage func(topic string, payload []byte)
 }
 
 // MQTTConfig — конфигурация MQTT
