@@ -1,0 +1,35 @@
+# ble2homed - BLE to MQTT Bridge Configuration
+# Supports espruinohub, homed, and both publishing modes
+
+mqtt:
+  broker: "tcp://localhost:1883"
+  username: ""
+  password: ""
+  client_id: "ble2homed"
+  qos: 1
+
+ble:
+  adapter: "hci0"
+  scan_timeout: "0s"  # 0 = continuous scanning
+  filter_macs: []     # empty = all devices
+  connect: false      # connect for GATT operations
+
+publish:
+  mode: "both"        # espruinohub | homed | both
+  base_prefix: "/ble"
+  retain_presence: true
+
+discovery:
+  enabled: true
+  prefix: "homeassistant"
+
+history:
+  enabled: true
+  intervals: ["1m", "10m", "1h", "24h", "7d"]
+
+web:
+  enabled: false
+  port: 8080
+
+log:
+  level: "info"       # debug | info | warn | error

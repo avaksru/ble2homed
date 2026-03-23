@@ -1,0 +1,291 @@
+package ble
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/avaksru/ble2homed/pkg/types"
+	"github.com/rs/zerolog"
+	"tinygo.org/x/bluetooth"
+)
+
+// Scanner — BLE сканер устройств
+type Scanner struct {
+	config     *types.BLEConfig
+	logger     zerolog.Logger
+	adapter    *bluetooth.Adapter
+	filterMACs map[string]bool
+	onAdv      func(types.Advertisement)
+	mu         sync.RWMutex
+	running    bool
+	cancel     context.CancelFunc
+}
+
+// NewScanner — создание нового BLE сканера
+func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error) {
+	// Создаем BLE адаптер
+	adapter := bluetooth.DefaultAdapter
+
+	// Включаем адаптер
+	if err := adapter.Enable(); err != nil {
+		return nil, fmt.Errorf("failed to enable BLE adapter: %w", err)
+	}
+
+	// Создаем map фильтров MAC-адресов
+	filterMACs := make(map[string]bool)
+	for _, mac := range config.FilterMACs {
+		normalized := normalizeMAC(mac)
+		filterMACs[normalized] = true
+	}
+
+	return &Scanner{
+		config:     config,
+		logger:     logger.With().Str("component", "ble_scanner").Logger(),
+		adapter:    adapter,
+		filterMACs: filterMACs,
+	}, nil
+}
+
+// SetAdvertisementHandler — установка обработчика advertising данных
+func (s *Scanner) SetAdvertisementHandler(handler func(types.Advertisement)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onAdv = handler
+}
+
+// Start — запуск сканирования
+func (s *Scanner) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return fmt.Errorf("scanner already running")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	s.running = true
+	s.mu.Unlock()
+
+	s.logger.Info().
+		Int("filter_count", len(s.filterMACs)).
+		Msg("Starting BLE scanner")
+
+	// Запускаем сканирование в отдельной горутине
+	go s.scanLoop(ctx)
+
+	return nil
+}
+
+// Stop — остановка сканирования
+func (s *Scanner) Stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.running {
+		return
+	}
+
+	if s.cancel != nil {
+		s.cancel()
+	}
+
+	s.running = false
+	s.logger.Info().Msg("BLE scanner stopped")
+}
+
+// scanLoop — основной цикл сканирования
+func (s *Scanner) scanLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Msg("Scan loop stopped by context")
+			return
+		default:
+			if err := s.doScan(ctx); err != nil {
+				s.logger.Error().Err(err).Msg("Scan error, retrying in 5 seconds")
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+					continue
+				}
+			}
+		}
+	}
+}
+
+// doScan — выполнение одного цикла сканирования
+func (s *Scanner) doScan(ctx context.Context) error {
+	// Обработчик advertising пакетов
+	advHandler := func(adapter *bluetooth.Adapter, scanResult bluetooth.ScanResult) {
+		// Проверяем фильтр MAC-адресов
+		addr := scanResult.Address.String()
+		if len(s.filterMACs) > 0 {
+			normalizedAddr := normalizeMAC(addr)
+			if !s.filterMACs[normalizedAddr] {
+				return
+			}
+		}
+
+		// Преобразуем в наш тип Advertisement
+		adv := types.Advertisement{
+			Addr: addr,
+			RSSI: int(scanResult.RSSI),
+		}
+
+		// Извлекаем имя устройства
+		if scanResult.LocalName() != "" {
+			adv.Name = scanResult.LocalName()
+		}
+
+		// Извлекаем manufacturer data
+		if manufacturerData := scanResult.ManufacturerData(); len(manufacturerData) > 0 {
+			for _, md := range manufacturerData {
+				if md.CompanyID != 0 {
+					// Преобразуем в []byte формат: [company_id_lo, company_id_hi, data...]
+					data := make([]byte, 2+len(md.Data))
+					data[0] = byte(md.CompanyID)
+					data[1] = byte(md.CompanyID >> 8)
+					copy(data[2:], md.Data)
+					adv.Manufacturer = data
+					break
+				}
+			}
+		}
+
+		// Извлекаем service data
+		if serviceData := scanResult.ServiceData(); len(serviceData) > 0 {
+			for _, sd := range serviceData {
+				adv.ServiceData = append(adv.ServiceData, types.ServiceData{
+					UUID: sd.UUID.String(),
+					Data: sd.Data,
+				})
+			}
+		}
+
+		s.logger.Debug().
+			Str("mac", adv.Addr).
+			Str("name", adv.Name).
+			Int("rssi", adv.RSSI).
+			Int("manufacturer_len", len(adv.Manufacturer)).
+			Int("service_data_count", len(adv.ServiceData)).
+			Msg("BLE advertisement received")
+
+		// Вызываем обработчик
+		s.mu.RLock()
+		handler := s.onAdv
+		s.mu.RUnlock()
+
+		if handler != nil {
+			handler(adv)
+		}
+	}
+
+	// Запускаем сканирование
+	s.logger.Info().Msg("Starting BLE scan")
+
+	err := s.adapter.Scan(advHandler)
+	if err != nil && ctx.Err() == nil {
+		return fmt.Errorf("scan failed: %w", err)
+	}
+
+	return nil
+}
+
+// ScanOnce — сканирование в течение указанного времени
+func (s *Scanner) ScanOnce(duration time.Duration) ([]types.Advertisement, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+
+	var results []types.Advertisement
+	var mu sync.Mutex
+
+	advHandler := func(adapter *bluetooth.Adapter, scanResult bluetooth.ScanResult) {
+		// Проверяем фильтр MAC-адресов
+		addr := scanResult.Address.String()
+		if len(s.filterMACs) > 0 {
+			normalizedAddr := normalizeMAC(addr)
+			if !s.filterMACs[normalizedAddr] {
+				return
+			}
+		}
+
+		adv := types.Advertisement{
+			Addr: addr,
+			RSSI: int(scanResult.RSSI),
+		}
+
+		if scanResult.LocalName() != "" {
+			adv.Name = scanResult.LocalName()
+		}
+
+		if manufacturerData := scanResult.ManufacturerData(); len(manufacturerData) > 0 {
+			for _, md := range manufacturerData {
+				if md.CompanyID != 0 {
+					data := make([]byte, 2+len(md.Data))
+					data[0] = byte(md.CompanyID)
+					data[1] = byte(md.CompanyID >> 8)
+					copy(data[2:], md.Data)
+					adv.Manufacturer = data
+					break
+				}
+			}
+		}
+
+		if serviceData := scanResult.ServiceData(); len(serviceData) > 0 {
+			for _, sd := range serviceData {
+				adv.ServiceData = append(adv.ServiceData, types.ServiceData{
+					UUID: sd.UUID.String(),
+					Data: sd.Data,
+				})
+			}
+		}
+
+		mu.Lock()
+		// Проверяем, есть ли уже это устройство
+		for i, existing := range results {
+			if existing.Addr == adv.Addr {
+				results[i] = adv // Обновляем
+				mu.Unlock()
+				return
+			}
+		}
+		results = append(results, adv)
+		mu.Unlock()
+	}
+
+	err := s.adapter.Scan(advHandler)
+	if err != nil && ctx.Err() == nil {
+		return nil, fmt.Errorf("scan failed: %w", err)
+	}
+
+	return results, nil
+}
+
+// IsRunning — проверка, запущен ли сканер
+func (s *Scanner) IsRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.running
+}
+
+// normalizeMAC — нормализация MAC-адреса
+func normalizeMAC(mac string) string {
+	// Удаляем разделители и приводим к uppercase
+	mac = strings.ToUpper(mac)
+	mac = strings.ReplaceAll(mac, "-", "")
+	mac = strings.ReplaceAll(mac, ":", "")
+	mac = strings.ReplaceAll(mac, ".", "")
+
+	// Добавляем двоеточия
+	if len(mac) == 12 {
+		return fmt.Sprintf("%s:%s:%s:%s:%s:%s",
+			mac[0:2], mac[2:4], mac[4:6],
+			mac[6:8], mac[8:10], mac[10:12])
+	}
+
+	return mac
+}
