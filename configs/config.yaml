@@ -1,5 +1,5 @@
 # ble2homed - BLE to MQTT Bridge Configuration
-# Supports espruinohub, homed, and both publishing modes
+# Supports homeassistant, homed, and both publishing modes
 
 mqtt:
   broker: "tcp://localhost:1883"
@@ -15,7 +15,7 @@ ble:
   connect: false      # connect for GATT operations
 
 publish:
-  mode: "both"        # espruinohub | homed | both
+  mode: "both"        # homeassistant | homed | both
   base_prefix: "/ble"
   retain_presence: true
 

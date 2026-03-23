@@ -83,13 +83,13 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 
 	// Публикуем в зависимости от режима
 	switch p.config.Publish.Mode {
-	case "espruinohub":
-		return p.publishEspruinoHub(mac, adv, parsed, device)
+	case "homeassistant":
+		return p.publishhomeassistant(mac, adv, parsed, device)
 	case "homed":
 		return p.publishHomed(mac, adv, parsed, device)
 	case "both":
-		if err := p.publishEspruinoHub(mac, adv, parsed, device); err != nil {
-			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish espruinohub style")
+		if err := p.publishhomeassistant(mac, adv, parsed, device); err != nil {
+			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish homeassistant style")
 		}
 		if err := p.publishHomed(mac, adv, parsed, device); err != nil {
 			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish homed style")
@@ -100,8 +100,8 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	}
 }
 
-// publishEspruinoHub — публикация в стиле espruinohub
-func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue, device *types.Device) error {
+// publishhomeassistant — публикация в стиле homeassistant
+func (p *Publisher) publishhomeassistant(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue, device *types.Device) error {
 	base := p.config.Publish.BasePrefix
 	macLower := strings.ToLower(mac)
 

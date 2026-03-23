@@ -6,7 +6,7 @@
 
 - **Непрерывное сканирование BLE** устройств
 - **Три режима публикации** MQTT топиков:
-  - `espruinohub` — совместимость с оригинальным ble2homed
+  - `homeassistant` — совместимость с оригинальным ble2homed
   - `homed` — строгий стиль HOMEd (fd, td, expose, device)
   - `both` — публикация в обоих форматах одновременно
 - **Home Assistant MQTT Discovery** — автоматическое обнаружение устройств
@@ -61,7 +61,7 @@ ble:
   connect: false      # подключаться для GATT операций
 
 publish:
-  mode: "both"        # espruinohub | homed | both
+  mode: "both"        # homeassistant | homed | both
   base_prefix: "/ble"
   retain_presence: true
 
@@ -83,7 +83,7 @@ log:
 
 ## MQTT Топики
 
-### Режим espruinohub
+### Режим homeassistant
 
 ```
 {base}/presence/{mac}               → "1" / "0" (retain)

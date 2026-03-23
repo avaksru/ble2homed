@@ -79,7 +79,7 @@ type BLEConfig struct {
 
 // PublishConfig — настройки публикации
 type PublishConfig struct {
-	Mode           string `yaml:"mode" json:"mode"`                       // espruinohub, homed, both
+	Mode           string `yaml:"mode" json:"mode"`                       // homeassistant, homed, both
 	BasePrefix     string `yaml:"base_prefix" json:"base_prefix"`         // базовый префикс топиков
 	RetainPresence bool   `yaml:"retain_presence" json:"retain_presence"` // retain для presence
 }

@@ -25,7 +25,7 @@ func DefaultConfig() *types.Config {
 			Connect:     false,
 		},
 		Publish: types.PublishConfig{
-			Mode:           "espruinohub",
+			Mode:           "homeassistant",
 			BasePrefix:     "/ble",
 			RetainPresence: true,
 		},
@@ -147,12 +147,12 @@ func fileExists(path string) bool {
 func validateConfig(config *types.Config) error {
 	// Проверка режима публикации
 	validModes := map[string]bool{
-		"espruinohub": true,
+		"homeassistant": true,
 		"homed":       true,
 		"both":        true,
 	}
 	if !validModes[config.Publish.Mode] {
-		return fmt.Errorf("invalid publish mode: %s (must be espruinohub, homed, or both)", config.Publish.Mode)
+		return fmt.Errorf("invalid publish mode: %s (must be homeassistant, homed, or both)", config.Publish.Mode)
 	}
 
 	// Проверка уровня логирования

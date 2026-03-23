@@ -22,8 +22,8 @@ const (
 	CharHumidity     = "2A6F"
 	CharPressure     = "2A6D"
 
-	// Espruino/Puck.js company ID
-	CompanyEspruino = 0x0590
+	// HomeAssistant/Puck.js company ID
+	CompanyHomeAssistant = 0x0590
 )
 
 // ParseBLEData — полный парсинг BLE advertising данных
@@ -36,9 +36,9 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 		companyID := binary.LittleEndian.Uint16(adv.Manufacturer[0:2])
 		companyHex := fmt.Sprintf("%04X", companyID)
 
-		// Espruino/Puck.js JSON5 парсинг
-		if int(companyID) == CompanyEspruino && len(adv.Manufacturer) > 2 {
-			parsed := parseEspruinoJSON(adv.Manufacturer[2:], now)
+		// HomeAssistant/Puck.js JSON5 парсинг
+		if int(companyID) == CompanyHomeAssistant && len(adv.Manufacturer) > 2 {
+			parsed := parseHomeAssistantJSON(adv.Manufacturer[2:], now)
 			for k, v := range parsed {
 				result[k] = v
 			}
@@ -123,9 +123,9 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	return result
 }
 
-// parseEspruinoJSON — парсинг JSON5 данных от Espruino/Puck.js
+// parseHomeAssistantJSON — парсинг JSON5 данных от HomeAssistant/Puck.js
 // Формат: {"t":22.4,"h":54} или {"temp":22.4}
-func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue {
+func parseHomeAssistantJSON(data []byte, now time.Time) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue)
 
 	// Преобразуем в строку и пытаемся найти известные паттерны
@@ -142,7 +142,7 @@ func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue 
 					Value:     f,
 					Unit:      "°C",
 					Type:      "temp",
-					Source:    "espruino",
+					Source:    "HomeAssistant",
 					Timestamp: now,
 				}
 			}
@@ -152,7 +152,7 @@ func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue 
 					Value:     f,
 					Unit:      "%",
 					Type:      "humidity",
-					Source:    "espruino",
+					Source:    "HomeAssistant",
 					Timestamp: now,
 				}
 			}
@@ -162,7 +162,7 @@ func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue 
 					Value:     int(f),
 					Unit:      "%",
 					Type:      "battery",
-					Source:    "espruino",
+					Source:    "HomeAssistant",
 					Timestamp: now,
 				}
 			}
@@ -172,7 +172,7 @@ func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue 
 					Value:     f,
 					Unit:      "hPa",
 					Type:      "pressure",
-					Source:    "espruino",
+					Source:    "HomeAssistant",
 					Timestamp: now,
 				}
 			}
@@ -182,7 +182,7 @@ func parseEspruinoJSON(data []byte, now time.Time) map[string]types.ParsedValue 
 					Value:     f,
 					Unit:      "lx",
 					Type:      "illuminance",
-					Source:    "espruino",
+					Source:    "HomeAssistant",
 					Timestamp: now,
 				}
 			}
