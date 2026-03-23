@@ -13,14 +13,14 @@ import (
 // Publisher — публикация данных в MQTT с поддержкой разных режимов
 type Publisher struct {
 	client  *Client
-	config  *types.PublishConfig
+	config  *types.Config
 	logger  zerolog.Logger
 	devices map[string]*types.Device
 	mu      sync.RWMutex
 }
 
 // NewPublisher — создание нового publisher
-func NewPublisher(client *Client, config *types.PublishConfig, logger zerolog.Logger) *Publisher {
+func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger) *Publisher {
 	return &Publisher{
 		client:  client,
 		config:  config,
@@ -82,7 +82,7 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	}
 
 	// Публикуем в зависимости от режима
-	switch p.config.Mode {
+	switch p.config.Publish.Mode {
 	case "espruinohub":
 		return p.publishEspruinoHub(mac, adv, parsed, device)
 	case "homed":
@@ -96,13 +96,13 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		}
 		return nil
 	default:
-		return fmt.Errorf("unknown publish mode: %s", p.config.Mode)
+		return fmt.Errorf("unknown publish mode: %s", p.config.Publish.Mode)
 	}
 }
 
 // publishEspruinoHub — публикация в стиле espruinohub
 func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue, device *types.Device) error {
-	base := p.config.BasePrefix
+	base := p.config.Publish.BasePrefix
 	macLower := strings.ToLower(mac)
 
 	// presence/{mac}
@@ -110,7 +110,7 @@ func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, pars
 	if !device.Online {
 		presence = "0"
 	}
-	if err := p.client.Publish(fmt.Sprintf("%s/presence/%s", base, macLower), presence, p.config.RetainPresence); err != nil {
+	if err := p.client.Publish(fmt.Sprintf("%s/presence/%s", base, macLower), presence, p.config.Publish.RetainPresence); err != nil {
 		return err
 	}
 
@@ -130,18 +130,18 @@ func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, pars
 	}
 
 	advBytes, _ := json.Marshal(advJSON)
-	if err := p.client.PublishJSON(fmt.Sprintf("%s/advertise/%s", base, macLower), advBytes, false); err != nil {
+	if err := p.client.PublishJSON(fmt.Sprintf("%s/advertise/%s", base, macLower), advBytes, p.config.Retain); err != nil {
 		return err
 	}
 
 	// advertise/{mac}/rssi
-	if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/rssi", base, macLower), adv.RSSI, false); err != nil {
+	if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/rssi", base, macLower), adv.RSSI, p.config.Retain); err != nil {
 		return err
 	}
 
 	// advertise/{mac}/name
 	if adv.Name != "" {
-		if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/name", base, macLower), adv.Name, false); err != nil {
+		if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/name", base, macLower), adv.Name, p.config.Retain); err != nil {
 			return err
 		}
 	}
@@ -153,7 +153,7 @@ func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, pars
 		// Специальные топики для manufacturer и service
 		if strings.HasPrefix(key, "manufacturer/") {
 			// manufacturer/{company_id}
-			if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/%s", base, macLower, key), val.Value, false); err != nil {
+			if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/%s", base, macLower, key), val.Value, p.config.Retain); err != nil {
 				p.logger.Warn().Err(err).Str("topic", topic).Msg("Failed to publish manufacturer topic")
 			}
 			continue
@@ -161,7 +161,7 @@ func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, pars
 
 		if strings.HasPrefix(key, "service/") {
 			// service/{uuid}
-			if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/%s", base, macLower, key), val.Value, false); err != nil {
+			if err := p.client.Publish(fmt.Sprintf("%s/advertise/%s/%s", base, macLower, key), val.Value, p.config.Retain); err != nil {
 				p.logger.Warn().Err(err).Str("topic", topic).Msg("Failed to publish service topic")
 			}
 			continue
@@ -169,7 +169,7 @@ func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, pars
 
 		// Обычные топики (temp, humidity, battery и т.д.)
 		if val.Value != nil {
-			if err := p.client.Publish(topic, val.Value, false); err != nil {
+			if err := p.client.Publish(topic, val.Value, p.config.Retain); err != nil {
 				p.logger.Warn().Err(err).Str("topic", topic).Msg("Failed to publish value topic")
 			}
 		}
@@ -180,10 +180,10 @@ func (p *Publisher) publishEspruinoHub(mac string, adv types.Advertisement, pars
 
 // publishHomed — публикация в стиле HOMEd
 func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue, device *types.Device) error {
-	base := p.config.BasePrefix
+	base := p.config.Publish.BasePrefix
 	macLower := strings.ToLower(mac)
 
-	// device/{mac} — информация об устройстве (retain)
+	// device/{mac} — информация об устройстве
 	deviceInfo := map[string]interface{}{
 		"last_seen": device.LastSeen.Unix(),
 		"online":    device.Online,
@@ -192,28 +192,28 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 		deviceInfo["name"] = device.Name
 	}
 	deviceBytes, _ := json.Marshal(deviceInfo)
-	if err := p.client.PublishJSON(fmt.Sprintf("%s/device/%s", base, macLower), deviceBytes, true); err != nil {
+	if err := p.client.PublishJSON(fmt.Sprintf("%s/device/%s", base, macLower), deviceBytes, p.config.Retain); err != nil {
 		return err
 	}
 
-	// expose/{mac} — список сенсоров и свойств (retain)
+	// expose/{mac} — список сенсоров и свойств
 	exposeList := device.GetExposeList()
 	exposeBytes, _ := json.Marshal(exposeList)
-	if err := p.client.PublishJSON(fmt.Sprintf("%s/expose/%s", base, macLower), exposeBytes, true); err != nil {
+	if err := p.client.PublishJSON(fmt.Sprintf("%s/expose/%s", base, macLower), exposeBytes, p.config.Retain); err != nil {
 		return err
 	}
 
 	// fd/{mac} — текущие значения как плоский JSON
 	fdFlat := device.GetFDFlat()
 	fdBytes, _ := json.Marshal(fdFlat)
-	if err := p.client.PublishJSON(fmt.Sprintf("%s/fd/%s", base, macLower), fdBytes, false); err != nil {
+	if err := p.client.PublishJSON(fmt.Sprintf("%s/fd/%s", base, macLower), fdBytes, p.config.Retain); err != nil {
 		return err
 	}
 
-	// fd/{mac}/{field} — отдельные топики для recorder (retain=false)
+	// fd/{mac}/{field} — отдельные топики для recorder
 	for key, value := range fdFlat {
 		topic := fmt.Sprintf("%s/fd/%s/%s", base, macLower, key)
-		if err := p.client.Publish(topic, value, false); err != nil {
+		if err := p.client.Publish(topic, value, p.config.Retain); err != nil {
 			p.logger.Warn().Err(err).Str("topic", topic).Msg("Failed to publish fd field")
 		}
 	}
@@ -223,7 +223,7 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 
 // PublishHistoryValue — публикация исторического значения
 func (p *Publisher) PublishHistoryValue(mac, field, interval string, value float64) error {
-	base := p.config.BasePrefix
+	base := p.config.Publish.BasePrefix
 	macLower := strings.ToLower(mac)
 
 	topic := fmt.Sprintf("%s/hist/%s/%s/%s", base, interval, macLower, field)
@@ -232,7 +232,7 @@ func (p *Publisher) PublishHistoryValue(mac, field, interval string, value float
 
 // PublishCommandResponse — публикация ответа на команду
 func (p *Publisher) PublishCommandResponse(mac, service, char string, data []byte, responseType string) error {
-	base := p.config.BasePrefix
+	base := p.config.Publish.BasePrefix
 	macLower := strings.ToLower(mac)
 
 	var topic string

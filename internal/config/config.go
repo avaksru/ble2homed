@@ -39,7 +39,7 @@ func DefaultConfig() *types.Config {
 		},
 		Web: types.WebConfig{
 			Enabled: false,
-			Port:    8080,
+			Port:    8090,
 		},
 		Log: types.LogConfig{
 			Level: "info",
@@ -86,6 +86,24 @@ func LoadConfig(path string) (*types.Config, error) {
 	// Валидация конфигурации
 	if err := validateConfig(config); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
+	// Преобразование mqtt_host в broker
+	if config.MQTTHost != "" {
+		config.MQTT.Broker = config.MQTTHost
+	}
+
+	// Преобразование mqtt_prefix в base_prefix
+	if config.MQTTPrefix != "" {
+		config.Publish.BasePrefix = config.MQTTPrefix
+	}
+
+	// Копируем scanInterval и scanTimeout в BLEConfig
+	if config.ScanInterval > 0 {
+		config.BLE.ScanInterval = config.ScanInterval
+	}
+	if config.ScanTimeout > 0 {
+		config.BLE.RestartPause = config.ScanTimeout
 	}
 
 	fmt.Printf("Config loaded from: %s\n", path)
@@ -163,6 +181,16 @@ func validateConfig(config *types.Config) error {
 	// Проверка префикса discovery
 	if config.Discovery.Prefix == "" {
 		config.Discovery.Prefix = "homeassistant"
+	}
+
+	// Проверка MQTT prefix
+	if config.MQTTPrefix == "" {
+		config.MQTTPrefix = "homed"
+	}
+
+	// Проверка интервалов истории
+	if config.History.Enabled && len(config.History.Intervals) == 0 {
+		config.History.Intervals = []string{"1m", "10m", "1h", "24h", "7d"}
 	}
 
 	return nil

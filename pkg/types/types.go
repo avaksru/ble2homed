@@ -7,13 +7,55 @@ import (
 
 // Config — основная конфигурация приложения
 type Config struct {
-	MQTT      MQTTConfig      `yaml:"mqtt" json:"mqtt"`
-	BLE       BLEConfig       `yaml:"ble" json:"ble"`
-	Publish   PublishConfig   `yaml:"publish" json:"publish"`
-	Discovery DiscoveryConfig `yaml:"discovery" json:"discovery"`
-	History   HistoryConfig   `yaml:"history" json:"history"`
-	Web       WebConfig       `yaml:"web" json:"web"`
-	Log       LogConfig       `yaml:"log" json:"log"`
+	OnlyKnownDevices   bool                    `yaml:"only_known_devices" json:"only_known_devices"`
+	ScanTimeout        int                     `yaml:"scanTimeout" json:"scanTimeout"`
+	ScanInterval       int                     `yaml:"scanInterval" json:"scanInterval"`
+	Retain             bool                    `yaml:"retain" json:"retain"`
+	KnownDevices       map[string]KnownDevice  `yaml:"known_devices" json:"known_devices"`
+	MinRSSI            int                     `yaml:"min_rssi" json:"min_rssi"`
+	BLETimeout         int                     `yaml:"ble_timeout" json:"ble_timeout"`
+	PresenceTimeout    int                     `yaml:"presence_timeout" json:"presence_timeout"`
+	MaxConnections     int                     `yaml:"max_connections" json:"max_connections"`
+	ConnectionTimeout  int                     `yaml:"connection_timeout" json:"connection_timeout"`
+	HistoryPath        string                  `yaml:"history_path" json:"history_path"`
+	AdvertisedServices map[string]ServiceInfo  `yaml:"advertised_services" json:"advertised_services"`
+	HTTPPort           int                     `yaml:"http_port" json:"http_port"`
+	HTTPProxy          bool                    `yaml:"http_proxy" json:"http_proxy"`
+	HTTPWhitelist      []string                `yaml:"http_whitelist" json:"http_whitelist"`
+	MQTTHost           string                  `yaml:"mqtt_host" json:"mqtt_host"`
+	MQTT               MQTTConfig              `yaml:"mqtt" json:"mqtt"`
+	MQTTOptions        map[string]interface{}  `yaml:"mqtt_options" json:"mqtt_options"`
+	MQTTPrefix         string                  `yaml:"mqtt_prefix" json:"mqtt_prefix"`
+	MQTTAdvertise      bool                    `yaml:"mqtt_advertise" json:"mqtt_advertise"`
+	MQTTAdvertiseManufacturerData bool         `yaml:"mqtt_advertise_manufacturer_data" json:"mqtt_advertise_manufacturer_data"`
+	MQTTAdvertiseServiceData bool             `yaml:"mqtt_advertise_service_data" json:"mqtt_advertise_service_data"`
+	MQTTFormatJSON     bool                    `yaml:"mqtt_format_json" json:"mqtt_format_json"`
+	MQTTFormatDecodedKeyTopic bool            `yaml:"mqtt_format_decoded_key_topic" json:"mqtt_format_decoded_key_topic"`
+	HomeAssistant      bool                    `yaml:"homeassistant" json:"homeassistant"`
+	HOMEd              bool                    `yaml:"homed" json:"homed"`
+	BLE                BLEConfig               `yaml:"ble" json:"ble"`
+	Publish            PublishConfig           `yaml:"publish" json:"publish"`
+	Discovery          DiscoveryConfig         `yaml:"discovery" json:"discovery"`
+	History            HistoryConfig           `yaml:"history" json:"history"`
+	Web                WebConfig               `yaml:"web" json:"web"`
+	Log                LogConfig               `yaml:"log" json:"log"`
+}
+
+// KnownDevice — информация об известном устройстве
+type KnownDevice struct {
+	Name             string                 `yaml:"name" json:"name"`
+	HOMEdCloud       bool                   `yaml:"homed_cloud" json:"homed_cloud"`
+	HOMEdDiscovery   bool                   `yaml:"homed_discovery" json:"homed_discovery"`
+	MinRSSI          int                    `yaml:"min_rssi" json:"min_rssi"`
+	CacheState       bool                   `yaml:"cache_state" json:"cache_state"`
+	BindKey          string                 `yaml:"bind_key" json:"bind_key"`
+	PresenceTimeout  int                    `yaml:"presence_timeout" json:"presence_timeout"`
+	Model            string                 `yaml:"model" json:"model"`
+}
+
+// ServiceInfo — информация о сервисе
+type ServiceInfo struct {
+	Name string `yaml:"name" json:"name"`
 }
 
 // MQTTConfig — настройки MQTT брокера
@@ -27,10 +69,12 @@ type MQTTConfig struct {
 
 // BLEConfig — настройки BLE сканера
 type BLEConfig struct {
-	Adapter     string   `yaml:"adapter" json:"adapter"`
-	ScanTimeout string   `yaml:"scan_timeout" json:"scan_timeout"`
-	FilterMACs  []string `yaml:"filter_macs" json:"filter_macs"`
-	Connect     bool     `yaml:"connect" json:"connect"` // Подключаться для GATT операций
+	Adapter      string   `yaml:"adapter" json:"adapter"`
+	ScanTimeout  string   `yaml:"scan_timeout" json:"scan_timeout"`
+	ScanInterval int      `yaml:"scanInterval" json:"scanInterval"`   // длительность одного сканирования (секунды)
+	RestartPause int      `yaml:"scanTimeout" json:"scanTimeout"`     // пауза между циклами сканирования (секунды)
+	FilterMACs   []string `yaml:"filter_macs" json:"filter_macs"`
+	Connect      bool     `yaml:"connect" json:"connect"` // Подключаться для GATT операций
 }
 
 // PublishConfig — настройки публикации

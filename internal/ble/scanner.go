@@ -113,15 +113,42 @@ func (s *Scanner) scanLoop(ctx context.Context) {
 					continue
 				}
 			}
+
+			// Пауза между циклами сканирования
+			pauseDuration := time.Duration(s.config.RestartPause) * time.Second
+			if pauseDuration <= 0 {
+				pauseDuration = 5 * time.Second // по умолчанию 5 секунд
+			}
+
+			s.logger.Info().
+				Dur("pause", pauseDuration).
+				Msg("Pausing before next scan cycle")
+
+			select {
+			case <-ctx.Done():
+				s.logger.Info().Msg("Scan loop stopped by context during pause")
+				return
+			case <-time.After(pauseDuration):
+				continue
+			}
 		}
 	}
 }
 
 // doScan — выполнение одного цикла сканирования
 func (s *Scanner) doScan(ctx context.Context) error {
+	// Создаем контекст с таймаутом для этого цикла сканирования
+	scanDuration := time.Duration(s.config.ScanInterval) * time.Second
+	if scanDuration <= 0 {
+		scanDuration = 60 * time.Second // по умолчанию 60 секунд
+	}
+
+	scanCtx, scanCancel := context.WithTimeout(ctx, scanDuration)
+	defer scanCancel()
+
 	// Обработчик advertising пакетов
 	advHandler := func(adapter *bluetooth.Adapter, scanResult bluetooth.ScanResult) {
-		// Проверяем фильтр MAC-адресов
+		// Проверяем фильтр MAC-адressов
 		addr := scanResult.Address.String()
 		if len(s.filterMACs) > 0 {
 			normalizedAddr := normalizeMAC(addr)
@@ -185,14 +212,42 @@ func (s *Scanner) doScan(ctx context.Context) error {
 	}
 
 	// Запускаем сканирование
-	s.logger.Info().Msg("Starting BLE scan")
+	s.logger.Info().
+		Dur("duration", scanDuration).
+		Msg("Starting BLE scan")
 
-	err := s.adapter.Scan(advHandler)
-	if err != nil && ctx.Err() == nil {
-		return fmt.Errorf("scan failed: %w", err)
+	// Запускаем сканирование в горутине
+	errChan := make(chan error, 1)
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		err := s.adapter.Scan(advHandler)
+		if err != nil && scanCtx.Err() == nil {
+			errChan <- fmt.Errorf("scan failed: %w", err)
+		}
+		close(errChan)
+	}()
+
+	// Ждем либо завершения таймаута, либо ошибки, либо отмены контекста
+	select {
+	case <-scanCtx.Done():
+		// Таймаут сканирования - останавливаем сканирование
+		s.logger.Info().Msg("Scan interval completed, stopping scan")
+		s.adapter.StopScan()
+		// Ждем завершения горутины сканирования
+		<-scanDone
+		return nil
+	case err := <-errChan:
+		if err != nil {
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		// Внешний контекст отменен
+		s.adapter.StopScan()
+		<-scanDone
+		return ctx.Err()
 	}
-
-	return nil
 }
 
 // ScanOnce — сканирование в течение указанного времени

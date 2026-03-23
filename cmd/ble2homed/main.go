@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	version   = "1.0.0"
+	version   = "0.0.2"
 	buildTime = "unknown"
 )
 
@@ -113,14 +113,14 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	mqttClient := mqtt.NewClient(mqttConfig, log.Logger)
 
-	// Подключаемся к MQTT
-	if err := mqttClient.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to MQTT: %w", err)
+	// Подключаемся к MQTT с повторными попытками
+	if err := connectWithRetry(ctx, mqttClient, 20*time.Second); err != nil {
+		return fmt.Errorf("failed to connect to MQTT after retries: %w", err)
 	}
 	defer mqttClient.Disconnect()
 
 	// 2. Создаем publisher
-	publisher := mqtt.NewPublisher(mqttClient, &cfg.Publish, log.Logger)
+	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger)
 
 	// 3. Создаем discovery
 	hadiscovery := discovery.NewDiscovery(mqttClient, &cfg.Discovery, log.Logger)
@@ -153,6 +153,16 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	// Обработчик advertising данных
 	scanner.SetAdvertisementHandler(func(adv types.Advertisement) {
+		// Фильтр: если only_known_devices = true, пропускаем неизвестные устройства
+		if cfg.OnlyKnownDevices {
+			if _, known := cfg.KnownDevices[adv.Addr]; !known {
+				log.Debug().
+					Str("mac", adv.Addr).
+					Msg("Skipping unknown device (only_known_devices=true)")
+				return
+			}
+		}
+
 		// Парсим данные
 		parsed := parser.ParseBLEData(adv)
 
@@ -316,5 +326,28 @@ func toFloat64(v interface{}) (float64, bool) {
 		return float64(val), true
 	default:
 		return 0, false
+	}
+}
+
+// connectWithRetry — подключение к MQTT с повторными попытками
+func connectWithRetry(ctx context.Context, client *mqtt.Client, retryInterval time.Duration) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if err := client.Connect(); err == nil {
+				log.Info().Msg("Successfully connected to MQTT broker")
+				return nil
+			}
+
+			log.Warn().Dur("retry_interval", retryInterval).Msg("Failed to connect to MQTT, retrying in 20 seconds")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryInterval):
+				continue
+			}
+		}
 	}
 }

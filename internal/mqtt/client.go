@@ -112,6 +112,11 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to connect to MQTT broker: %w", token.Error())
 	}
 
+	// Синхронно устанавливаем флаг подключения
+	c.mu.Lock()
+	c.connected = true
+	c.mu.Unlock()
+
 	return nil
 }
 
