@@ -14,13 +14,15 @@ type HistoryPoint struct {
 	Timestamp time.Time
 }
 
-// HistoryRing — кольцевой буфер для хранения истории
+// HistoryRing — кольцевой буфер для хранения истории с индексацией
 type HistoryRing struct {
-	Points []HistoryPoint
-	Size   int
-	Index  int
-	Full   bool
-	mu     sync.Mutex
+	Points      []HistoryPoint
+	Size        int
+	Index       int
+	Full        bool
+	mu          sync.RWMutex
+	lastCleanup time.Time
+	validCount  int // количество валидных точек
 }
 
 // Manager — менеджер истории значений
@@ -49,10 +51,12 @@ func NewManager(config HistoryConfig, logger zerolog.Logger) *Manager {
 // NewHistoryRing — создание нового кольцевого буфера
 func NewHistoryRing(size int) *HistoryRing {
 	return &HistoryRing{
-		Points: make([]HistoryPoint, size),
-		Size:   size,
-		Index:  0,
-		Full:   false,
+		Points:      make([]HistoryPoint, size),
+		Size:        size,
+		Index:       0,
+		Full:        false,
+		validCount:  0,
+		lastCleanup: time.Now(),
 	}
 }
 
@@ -60,6 +64,11 @@ func NewHistoryRing(size int) *HistoryRing {
 func (r *HistoryRing) Add(value float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Если точка в этом слоте была валидная, уменьшаем счетчик
+	if !r.Points[r.Index].Timestamp.IsZero() {
+		r.validCount--
+	}
 
 	r.Points[r.Index] = HistoryPoint{
 		Value:     value,
@@ -70,24 +79,50 @@ func (r *HistoryRing) Add(value float64) {
 	if r.Index == 0 {
 		r.Full = true
 	}
+
+	r.validCount++
+
+	// Периодическая очистка (раз в 5 минут)
+	if time.Since(r.lastCleanup) > 5*time.Minute {
+		r.cleanupOldPoints()
+		r.lastCleanup = time.Now()
+	}
+}
+
+// cleanupOldPoints — очистка старых точек (старше 24 часов)
+func (r *HistoryRing) cleanupOldPoints() {
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for i := 0; i < r.Size; i++ {
+		if !r.Points[i].Timestamp.IsZero() && r.Points[i].Timestamp.Before(cutoff) {
+			r.Points[i] = HistoryPoint{}
+			r.validCount--
+		}
+	}
 }
 
 // GetAverage — получение среднего значения за период
 func (r *HistoryRing) GetAverage(duration time.Duration) (float64, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Оптимизация: если нет валидных точек, сразу возвращаем false
+	if r.validCount == 0 {
+		return 0, false
+	}
 
 	cutoff := time.Now().Add(-duration)
 	var sum float64
 	var count int
 
-	for i := 0; i < r.Size; i++ {
-		if !r.Full && i >= r.Index {
-			break
-		}
+	// Оптимизация: итерируем только по валидным точкам
+	limit := r.Size
+	if !r.Full {
+		limit = r.Index
+	}
 
+	for i := 0; i < limit; i++ {
 		point := r.Points[i]
-		if point.Timestamp.After(cutoff) && !point.Timestamp.IsZero() {
+		if !point.Timestamp.IsZero() && point.Timestamp.After(cutoff) {
 			sum += point.Value
 			count++
 		}
@@ -108,22 +143,16 @@ func (r *HistoryRing) Cleanup(cutoff time.Time) {
 	for i := 0; i < r.Size; i++ {
 		if !r.Points[i].Timestamp.IsZero() && r.Points[i].Timestamp.Before(cutoff) {
 			r.Points[i] = HistoryPoint{}
+			r.validCount--
 		}
 	}
 }
 
 // Count — количество точек в буфере
 func (r *HistoryRing) Count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	count := 0
-	for i := 0; i < r.Size; i++ {
-		if !r.Points[i].Timestamp.IsZero() {
-			count++
-		}
-	}
-	return count
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.validCount
 }
 
 // AddValue — добавление значения в историю
@@ -230,6 +259,29 @@ func (m *Manager) Cleanup(maxAge time.Duration) {
 		if !hasData {
 			delete(m.buffers, mac)
 		}
+	}
+}
+
+// GetStats — получение статистики по истории
+func (m *Manager) GetStats() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	totalDevices := len(m.buffers)
+	totalFields := 0
+	totalPoints := 0
+
+	for _, fields := range m.buffers {
+		totalFields += len(fields)
+		for _, ring := range fields {
+			totalPoints += ring.Count()
+		}
+	}
+
+	return map[string]interface{}{
+		"total_devices": totalDevices,
+		"total_fields":  totalFields,
+		"total_points":  totalPoints,
 	}
 }
 

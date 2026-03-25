@@ -369,8 +369,7 @@ jobs:
       - name: Generate nightly tag
         id: nightly-info
         run: |
-          DATE=$(date -u +'%Y%m%d')
-          TAG="nightly-${DATE}"
+          TAG="nightly"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "::notice::Nightly tag: ${TAG}"
 
@@ -395,10 +394,10 @@ jobs:
           echo "::endgroup::"
 
       - name: Delete old nightly release
-        uses: dev-drprasad/delete-older-releases@v1
+        uses: dev-drprasad/delete-older-releases@v0.2.1
         with:
           keep_latest: 0
-          delete_tag_pattern: nightly-
+          delete_tag_pattern: nightly*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

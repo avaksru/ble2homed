@@ -22,6 +22,8 @@ type Scanner struct {
 	mu         sync.RWMutex
 	running    bool
 	cancel     context.CancelFunc
+	macCache   map[string]string // кэш нормализованных MAC-адресов
+	advPool    sync.Pool         // пул объектов Advertisement
 }
 
 // NewScanner — создание нового BLE сканера
@@ -46,6 +48,12 @@ func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error
 		logger:     logger.With().Str("component", "ble_scanner").Logger(),
 		adapter:    adapter,
 		filterMACs: filterMACs,
+		macCache:   make(map[string]string),
+		advPool: sync.Pool{
+			New: func() interface{} {
+				return &types.Advertisement{}
+			},
+		},
 	}, nil
 }
 
@@ -148,20 +156,23 @@ func (s *Scanner) doScan(ctx context.Context) error {
 
 	// Обработчик advertising пакетов
 	advHandler := func(adapter *bluetooth.Adapter, scanResult bluetooth.ScanResult) {
-		// Проверяем фильтр MAC-адressов
+		// Проверяем фильтр MAC-адресов с кэшированием
 		addr := scanResult.Address.String()
 		if len(s.filterMACs) > 0 {
-			normalizedAddr := normalizeMAC(addr)
+			normalizedAddr := s.normalizeMACCached(addr)
 			if !s.filterMACs[normalizedAddr] {
 				return
 			}
 		}
 
-		// Преобразуем в наш тип Advertisement
-		adv := types.Advertisement{
-			Addr: addr,
-			RSSI: int(scanResult.RSSI),
-		}
+		// Получаем объект из пула
+		advPtr := s.advPool.Get().(*types.Advertisement)
+		adv := advPtr
+		adv.Addr = addr
+		adv.RSSI = int(scanResult.RSSI)
+		adv.Name = ""
+		adv.Manufacturer = adv.Manufacturer[:0]
+		adv.ServiceData = adv.ServiceData[:0]
 
 		// Извлекаем имя устройства
 		if scanResult.LocalName() != "" {
@@ -207,8 +218,11 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		s.mu.RUnlock()
 
 		if handler != nil {
-			handler(adv)
+			handler(*adv)
 		}
+
+		// Возвращаем объект в пул
+		s.advPool.Put(adv)
 	}
 
 	// Запускаем сканирование
@@ -312,12 +326,32 @@ func (s *Scanner) ScanOnce(duration time.Duration) ([]types.Advertisement, error
 		mu.Unlock()
 	}
 
-	err := s.adapter.Scan(advHandler)
-	if err != nil && ctx.Err() == nil {
-		return nil, fmt.Errorf("scan failed: %w", err)
-	}
+	// Запускаем сканирование в горутине
+	errChan := make(chan error, 1)
+	scanDone := make(chan struct{})
+	go func() {
+		defer close(scanDone)
+		err := s.adapter.Scan(advHandler)
+		if err != nil && ctx.Err() == nil {
+			errChan <- fmt.Errorf("scan failed: %w", err)
+		}
+		close(errChan)
+	}()
 
-	return results, nil
+	// Ждем либо завершения таймаута, либо ошибки
+	select {
+	case <-ctx.Done():
+		// Таймаут сканирования - останавливаем сканирование
+		s.adapter.StopScan()
+		// Ждем завершения горутины сканирования
+		<-scanDone
+		return results, nil
+	case err := <-errChan:
+		if err != nil {
+			return nil, err
+		}
+		return results, nil
+	}
 }
 
 // IsRunning — проверка, запущен ли сканер
@@ -343,4 +377,22 @@ func normalizeMAC(mac string) string {
 	}
 
 	return mac
+}
+
+// normalizeMACCached — нормализация MAC-адреса с кэшированием
+func (s *Scanner) normalizeMACCached(mac string) string {
+	s.mu.RLock()
+	if cached, ok := s.macCache[mac]; ok {
+		s.mu.RUnlock()
+		return cached
+	}
+	s.mu.RUnlock()
+
+	normalized := normalizeMAC(mac)
+
+	s.mu.Lock()
+	s.macCache[mac] = normalized
+	s.mu.Unlock()
+
+	return normalized
 }

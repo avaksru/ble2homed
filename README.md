@@ -1,15 +1,16 @@
 # ble2homed - BLE to MQTT Bridge
 
-Полноценный BLE to MQTT мост с поддержкой HOMEd и Home Assistant MQTT Discovery.
+Полноценный BLE to MQTT мост с интеграцией в HOMEd.
 
 ## Особенности
 
 - **Непрерывное сканирование BLE** устройств
-- **Три режима публикации** MQTT топиков:
-  - `homeassistant` — совместимость с оригинальным ble2homed
-  - `homed` — строгий стиль HOMEd (fd, td, expose, device)
-  - `both` — публикация в обоих форматах одновременно
-- **Home Assistant MQTT Discovery** — автоматическое обнаружение устройств
+- **Публикация в HOMEd стиле**:
+  - `device/{mac}` — информация об устройстве (last_seen, online, name)
+  - `expose/{mac}` — JSON со списком сенсоров (retain)
+  - `fd/{mac}` — плоский JSON с текущими значениями (retain)
+  - `fd/{mac}/{field}` — отдельные топики для recorder
+  - `td/{mac}/...` — команды (write, read, notify, ping)
 - **История значений** — кольцевые буферы с расчётом средних за 1m/10m/1h/24h/7d
 - **Парсинг BLE advertising**:
   - Espruino/Puck.js (company 0x0590 → JSON5)
@@ -61,13 +62,8 @@ ble:
   connect: false      # подключаться для GATT операций
 
 publish:
-  mode: "both"        # homeassistant | homed | both
   base_prefix: "/ble"
   retain_presence: true
-
-discovery:
-  enabled: true
-  prefix: "homeassistant"
 
 history:
   enabled: true
@@ -81,49 +77,33 @@ log:
   level: "info"       # debug | info | warn | error
 ```
 
-## MQTT Топики
+## MQTT Топики (HOMEd стиль)
 
-### Режим homeassistant
-
-```
-{base}/presence/{mac}               → "1" / "0" (retain)
-{base}/advertise/{mac}              → полный JSON advertising
-{base}/advertise/{mac}/rssi         → -67
-{base}/advertise/{mac}/name         → "ThermoX"
-{base}/advertise/{mac}/temp         → 22.4 (если распознано)
-{base}/advertise/{mac}/battery      → 87
-{base}/advertise/{mac}/manufacturer/0590 → hex или parsed JSON
-{base}/advertise/{mac}/service/1809 → {"temp":22.4}
-{base}/json/{mac}/{uuid}            → например {"temp":22.4}
-```
-
-### Режим homed
+### Основные топики
 
 ```
-{base}/device/{mac}                 → {"last_seen": unix, "online": true} (retain)
+{base}/device/{mac}                 → {"last_seen": unix, "online": true, "name": "..."} (retain)
 {base}/expose/{mac}                 → JSON со списком сенсоров (retain)
 {base}/fd/{mac}                     → плоский JSON: {"temp":22.4, "battery":87, "rssi":-67}
 {base}/fd/{mac}/temp                → 22.4 (отдельные топики для recorder)
 {base}/fd/{mac}/battery             → 87
 {base}/fd/{mac}/rssi                → -67
+```
+
+### Команды
+
+```
 {base}/td/{mac}/write/{service}/{char}   → запись в характеристику
 {base}/td/{mac}/read/{service}/{char}    → чтение характеристики
 {base}/td/{mac}/notify/{service}/{char}  → подписка на уведомления
 {base}/td/{mac}/ping                     → ping устройства
 ```
 
-### История (доступна в обоих режимах)
+### История
 
 ```
 {base}/hist/{interval}/{mac}/{field}   → среднее за период
 {base}/hist/request                    → запрос на пересчёт (опционально)
-```
-
-### Home Assistant Discovery
-
-```
-homeassistant/sensor/ble_{device_id}/{sensor}/config
-homeassistant/binary_sensor/ble_{device_id}/presence/config
 ```
 
 ## Команды
@@ -167,7 +147,7 @@ internal/
   config/               # Загрузка config.yaml/config.json
   ble/                  # BLE сканер (go-ble/ble)
   mqtt/                 # MQTT клиент, publisher, subscriber
-  discovery/            # Home Assistant MQTT Discovery
+  discovery/            # Discovery (availability)
   parser/               # Парсинг BLE advertising данных
   history/              # Кольцевые буферы, расчёт средних
   web/                  # Веб-сервер (опционально)

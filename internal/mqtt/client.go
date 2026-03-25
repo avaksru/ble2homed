@@ -27,6 +27,7 @@ type MQTTConfig struct {
 	Password string
 	ClientID string
 	QoS      byte
+	Prefix   string
 }
 
 // NewClient — создание нового MQTT клиента
@@ -69,6 +70,14 @@ func (c *Client) Connect() error {
 		opts.SetPassword(c.config.Password)
 	}
 
+	// Настройка Last Will and Testament (LWT)
+	if c.config.Prefix != "" {
+		willTopic := fmt.Sprintf("%s/services/ble", c.config.Prefix)
+		willPayload := []byte(`{"status":"offline"}`)
+		opts.SetWill(willTopic, string(willPayload), c.config.QoS, true)
+		c.logger.Info().Str("topic", willTopic).Msg("LWT configured")
+	}
+
 	// Обработчик подключения
 	opts.SetOnConnectHandler(func(client mqtt.Client) {
 		c.mu.Lock()
@@ -77,6 +86,11 @@ func (c *Client) Connect() error {
 		c.mu.Unlock()
 
 		c.logger.Info().Str("broker", c.config.Broker).Msg("Connected to MQTT broker")
+
+		// Публикуем статус online при подключении
+		if err := c.PublishOnlineStatus(); err != nil {
+			c.logger.Error().Err(err).Msg("Failed to publish online status")
+		}
 
 		if handler != nil {
 			handler()
@@ -241,4 +255,14 @@ func (c *Client) IsConnected() bool {
 // GetClientID — получение client ID
 func (c *Client) GetClientID() string {
 	return c.config.ClientID
+}
+
+// PublishOnlineStatus — публикация статуса "online" в топик services/ble
+func (c *Client) PublishOnlineStatus() error {
+	if c.config.Prefix == "" {
+		return nil
+	}
+	topic := fmt.Sprintf("%s/services/ble", c.config.Prefix)
+	payload := []byte(`{"status":"online"}`)
+	return c.PublishJSON(topic, payload, true)
 }

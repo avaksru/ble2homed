@@ -1,5 +1,5 @@
 # ble2homed - BLE to MQTT Bridge Configuration
-# Supports homeassistant, homed, and both publishing modes
+# HOMEd integration only
 
 mqtt:
   broker: "tcp://localhost:1883"
@@ -15,13 +15,8 @@ ble:
   connect: false      # connect for GATT operations
 
 publish:
-  mode: "both"        # homeassistant | homed | both
   base_prefix: "/ble"
   retain_presence: true
-
-discovery:
-  enabled: true
-  prefix: "homeassistant"
 
 history:
   enabled: true

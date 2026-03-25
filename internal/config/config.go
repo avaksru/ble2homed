@@ -25,13 +25,8 @@ func DefaultConfig() *types.Config {
 			Connect:     false,
 		},
 		Publish: types.PublishConfig{
-			Mode:           "homeassistant",
 			BasePrefix:     "/ble",
-			RetainPresence: true,
-		},
-		Discovery: types.DiscoveryConfig{
-			Enabled: true,
-			Prefix:  "homeassistant",
+			RetainPresence: false,
 		},
 		History: types.HistoryConfig{
 			Enabled:   true,
@@ -106,6 +101,14 @@ func LoadConfig(path string) (*types.Config, error) {
 		config.BLE.RestartPause = config.ScanTimeout
 	}
 
+	// Устанавливаем значения по умолчанию для BLE, если не заданы
+	if config.BLE.ScanInterval <= 0 {
+		config.BLE.ScanInterval = 60
+	}
+	if config.BLE.RestartPause <= 0 {
+		config.BLE.RestartPause = 5
+	}
+
 	fmt.Printf("Config loaded from: %s\n", path)
 	return config, nil
 }
@@ -145,16 +148,6 @@ func fileExists(path string) bool {
 
 // validateConfig — валидация конфигурации
 func validateConfig(config *types.Config) error {
-	// Проверка режима публикации
-	validModes := map[string]bool{
-		"homeassistant": true,
-		"homed":       true,
-		"both":        true,
-	}
-	if !validModes[config.Publish.Mode] {
-		return fmt.Errorf("invalid publish mode: %s (must be homeassistant, homed, or both)", config.Publish.Mode)
-	}
-
 	// Проверка уровня логирования
 	validLevels := map[string]bool{
 		"debug": true,
@@ -177,11 +170,6 @@ func validateConfig(config *types.Config) error {
 	}
 	// Убираем trailing slash
 	config.Publish.BasePrefix = strings.TrimSuffix(config.Publish.BasePrefix, "/")
-
-	// Проверка префикса discovery
-	if config.Discovery.Prefix == "" {
-		config.Discovery.Prefix = "homeassistant"
-	}
 
 	// Проверка MQTT prefix
 	if config.MQTTPrefix == "" {

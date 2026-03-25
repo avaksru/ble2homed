@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	version   = "0.0.2"
+	version   = "0.0.3"
 	buildTime = "unknown"
 )
 
@@ -50,7 +50,6 @@ func main() {
 
 	log.Info().
 		Str("version", version).
-		Str("mode", cfg.Publish.Mode).
 		Str("base_prefix", cfg.Publish.BasePrefix).
 		Msg("Starting ble2homed")
 
@@ -72,8 +71,13 @@ func main() {
 	log.Info().Str("signal", sig.String()).Msg("Received shutdown signal")
 
 	// Graceful shutdown
+	log.Info().Msg("Starting graceful shutdown...")
+	
+	// Публикуем offline статус для всех устройств
+	log.Info().Msg("Publishing offline status for all devices...")
+	
 	cancel()
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 	log.Info().Msg("Shutdown complete")
 }
 
@@ -109,6 +113,7 @@ func run(ctx context.Context, cfg *types.Config) error {
 		Password: cfg.MQTT.Password,
 		ClientID: cfg.MQTT.ClientID,
 		QoS:      cfg.MQTT.QoS,
+		Prefix:   cfg.MQTTPrefix,
 	}
 
 	mqttClient := mqtt.NewClient(mqttConfig, log.Logger)
@@ -123,7 +128,7 @@ func run(ctx context.Context, cfg *types.Config) error {
 	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger)
 
 	// 3. Создаем discovery
-	hadiscovery := discovery.NewDiscovery(mqttClient, &cfg.Discovery, log.Logger)
+	hadiscovery := discovery.NewDiscovery(mqttClient, log.Logger)
 
 	// 4. Создаем history manager
 	historyConfig := history.HistoryConfig{
@@ -245,18 +250,20 @@ func periodicTasks(ctx context.Context, publisher *mqtt.Publisher, hadiscovery *
 			}
 			// Публикация availability
 			hadiscovery.PublishAvailability(cfg.Publish.BasePrefix)
+			// Проверка устройств на offline по presence_timeout
+			publisher.CheckOfflineDevices()
 
 		case <-historyTicker.C:
-			// Публикация исторических данных
-			for mac, device := range publisher.GetAllDevices() {
-				averages := historyManager.GetAllAverages(mac)
-				for field, intervals := range averages {
-					for interval, avg := range intervals {
-						publisher.PublishHistoryValue(mac, field, interval, avg)
-					}
+		// Публикация исторических данных
+		for mac, device := range publisher.GetAllDevices() {
+			averages := historyManager.GetAllAverages(mac)
+			for field, intervals := range averages {
+				for interval, avg := range intervals {
+					publisher.PublishHistoryValue(mac, field, interval, avg)
 				}
-				_ = device
 			}
+			_ = device
+		}
 
 		case <-cleanupTicker.C:
 			// Очистка старых данных (7 дней)

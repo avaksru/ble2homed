@@ -1,6 +1,7 @@
 package types
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,11 +32,9 @@ type Config struct {
 	MQTTAdvertiseServiceData bool             `yaml:"mqtt_advertise_service_data" json:"mqtt_advertise_service_data"`
 	MQTTFormatJSON     bool                    `yaml:"mqtt_format_json" json:"mqtt_format_json"`
 	MQTTFormatDecodedKeyTopic bool            `yaml:"mqtt_format_decoded_key_topic" json:"mqtt_format_decoded_key_topic"`
-	HomeAssistant      bool                    `yaml:"homeassistant" json:"homeassistant"`
 	HOMEd              bool                    `yaml:"homed" json:"homed"`
 	BLE                BLEConfig               `yaml:"ble" json:"ble"`
 	Publish            PublishConfig           `yaml:"publish" json:"publish"`
-	Discovery          DiscoveryConfig         `yaml:"discovery" json:"discovery"`
 	History            HistoryConfig           `yaml:"history" json:"history"`
 	Web                WebConfig               `yaml:"web" json:"web"`
 	Log                LogConfig               `yaml:"log" json:"log"`
@@ -71,23 +70,16 @@ type MQTTConfig struct {
 type BLEConfig struct {
 	Adapter      string   `yaml:"adapter" json:"adapter"`
 	ScanTimeout  string   `yaml:"scan_timeout" json:"scan_timeout"`
-	ScanInterval int      `yaml:"scanInterval" json:"scanInterval"`   // длительность одного сканирования (секунды)
-	RestartPause int      `yaml:"scanTimeout" json:"scanTimeout"`     // пауза между циклами сканирования (секунды)
+	ScanInterval int      `yaml:"scan_interval" json:"scan_interval"`   // длительность одного сканирования (секунды)
+	RestartPause int      `yaml:"restart_pause" json:"restart_pause"`   // пауза между циклами сканирования (секунды)
 	FilterMACs   []string `yaml:"filter_macs" json:"filter_macs"`
 	Connect      bool     `yaml:"connect" json:"connect"` // Подключаться для GATT операций
 }
 
 // PublishConfig — настройки публикации
 type PublishConfig struct {
-	Mode           string `yaml:"mode" json:"mode"`                       // homeassistant, homed, both
 	BasePrefix     string `yaml:"base_prefix" json:"base_prefix"`         // базовый префикс топиков
 	RetainPresence bool   `yaml:"retain_presence" json:"retain_presence"` // retain для presence
-}
-
-// DiscoveryConfig — настройки Home Assistant MQTT Discovery
-type DiscoveryConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Prefix  string `yaml:"prefix" json:"prefix"` // homeassistant
 }
 
 // HistoryConfig — настройки истории значений
@@ -120,8 +112,7 @@ type Device struct {
 	ParsedValues map[string]ParsedValue `json:"parsed_values,omitempty"`
 
 	// Внутренние поля
-	mu             sync.RWMutex
-	historyBuffers map[string]*HistoryRing
+	Mu sync.RWMutex `json:"-"`
 }
 
 // ParsedValue — распарсенное значение из advertising
@@ -159,21 +150,6 @@ type Command struct {
 	Topic   string
 }
 
-// HistoryPoint — точка данных для истории
-type HistoryPoint struct {
-	Value     float64
-	Timestamp time.Time
-}
-
-// HistoryRing — кольцевой буфер для хранения истории
-type HistoryRing struct {
-	Points []HistoryPoint
-	Size   int
-	Index  int
-	Full   bool
-	mu     sync.Mutex
-}
-
 // DeviceExpose — информация для топика expose в HOMEd стиле
 type DeviceExpose struct {
 	Type     string   `json:"type"` // sensor, binary_sensor, switch
@@ -188,41 +164,61 @@ type DeviceExpose struct {
 // NewDevice — создание нового устройства
 func NewDevice(mac string) *Device {
 	return &Device{
-		MAC:            mac,
-		LastSeen:       time.Now(),
-		Online:         true,
-		ParsedValues:   make(map[string]ParsedValue),
-		historyBuffers: make(map[string]*HistoryRing),
+		MAC:          mac,
+		LastSeen:     time.Now(),
+		Online:       true,
+		ParsedValues: make(map[string]ParsedValue),
 	}
 }
 
 // UpdateLastSeen — обновить время последнего обнаружения
 func (d *Device) UpdateLastSeen() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.Mu.Lock()
+	defer d.Mu.Unlock()
 	d.LastSeen = time.Now()
 	d.Online = true
 }
 
+// GetLastSeen — получить время последнего обнаружения (потокобезопасно)
+func (d *Device) GetLastSeen() time.Time {
+	d.Mu.RLock()
+	defer d.Mu.RUnlock()
+	return d.LastSeen
+}
+
+// IsOnline — проверить онлайн статус (потокобезопасно)
+func (d *Device) IsOnline() bool {
+	d.Mu.RLock()
+	defer d.Mu.RUnlock()
+	return d.Online
+}
+
+// SetOnline — установить онлайн статус (потокобезопасно)
+func (d *Device) SetOnline(online bool) {
+	d.Mu.Lock()
+	defer d.Mu.Unlock()
+	d.Online = online
+}
+
 // SetParsedValue — установить распарсенное значение
 func (d *Device) SetParsedValue(key string, value ParsedValue) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.Mu.Lock()
+	defer d.Mu.Unlock()
 	d.ParsedValues[key] = value
 }
 
 // GetParsedValue — получить распарсенное значение
 func (d *Device) GetParsedValue(key string) (ParsedValue, bool) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.Mu.RLock()
+	defer d.Mu.RUnlock()
 	val, ok := d.ParsedValues[key]
 	return val, ok
 }
 
 // GetParsedValues — получить все распарсенные значения (копию)
 func (d *Device) GetParsedValues() map[string]ParsedValue {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.Mu.RLock()
+	defer d.Mu.RUnlock()
 	result := make(map[string]ParsedValue, len(d.ParsedValues))
 	for k, v := range d.ParsedValues {
 		result[k] = v
@@ -232,8 +228,8 @@ func (d *Device) GetParsedValues() map[string]ParsedValue {
 
 // GetFDFlat — получить плоский JSON для топика fd (HOMEd стиль)
 func (d *Device) GetFDFlat() map[string]interface{} {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.Mu.RLock()
+	defer d.Mu.RUnlock()
 
 	result := make(map[string]interface{})
 	result["rssi"] = d.RSSI
@@ -253,8 +249,8 @@ func (d *Device) GetFDFlat() map[string]interface{} {
 
 // GetExposeList — получить список expose для топика expose (HOMEd стиль)
 func (d *Device) GetExposeList() []DeviceExpose {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.Mu.RLock()
+	defer d.Mu.RUnlock()
 
 	exposes := []DeviceExpose{
 		{
@@ -317,4 +313,20 @@ func (d *Device) GetExposeList() []DeviceExpose {
 
 func floatPtr(f float64) *float64 {
 	return &f
+}
+
+// GetDeviceTopicName — получить имя для топика MQTT (имя устройства или MAC)
+func (c *Config) GetDeviceTopicName(mac string) string {
+	normalizedMAC := NormalizeMACForTopic(mac)
+	if knownDevice, exists := c.KnownDevices[normalizedMAC]; exists && knownDevice.Name != "" {
+		return knownDevice.Name
+	}
+	return normalizedMAC
+}
+
+// NormalizeMACForTopic — нормализация MAC-адреса для использования в топиках (lowercase)
+func NormalizeMACForTopic(mac string) string {
+	mac = strings.ToLower(mac)
+	mac = strings.ReplaceAll(mac, "-", ":")
+	return mac
 }
