@@ -96,12 +96,16 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		device.Name = adv.Name
 	}
 
-	// Если устройство было offline — публикуем online статус
+	// ✅ Всегда публикуем online статус при получении данных
+	// Это решает проблему когда после перезапуска брокера/сервиса статус остаётся offline
+	p.logger.Debug().Str("mac", mac).Msg("Publishing online status for active device")
+	if err := p.publishDeviceStatus(mac, "online", device.GetLastSeen()); err != nil {
+		p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish online status")
+	}
+
+	// Если устройство перешло из оффлайна — логируем это отдельно
 	if wasOffline {
 		p.logger.Info().Str("mac", mac).Msg("Device came online")
-		if err := p.publishDeviceStatus(mac, "online", device.GetLastSeen()); err != nil {
-			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish online status")
-		}
 	}
 
 	// Обновляем распарсенные значения
@@ -136,6 +140,11 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	// Публикуем expose для HOMEd
 	if err := p.publishExpose(mac, device); err != nil {
 		return err
+	}
+
+	// Публикуем статус всех устройств только при изменениях
+	if err := p.publishBleStatus(); err != nil {
+		p.logger.Error().Err(err).Msg("Failed to publish ble status")
 	}
 
 	return nil
@@ -173,6 +182,32 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 
 // publishExpose — публикация expose для HOMEd
 func (p *Publisher) publishExpose(mac string, device *types.Device) error {
+	// ✅ Публикуем только ОДИН РАЗ после первого обнаружения
+	device.Mu.RLock()
+	alreadyPublished := device.ExposePublished
+	device.Mu.RUnlock()
+	
+	if alreadyPublished {
+		return nil
+	}
+
+	// Публикуем только если есть полезные сенсорные данные
+	hasUsefulData := false
+	
+	parsedValues := device.GetParsedValues()
+	for key := range parsedValues {
+		switch key {
+		case "temp", "humidity", "battery", "pressure", "illuminance":
+			hasUsefulData = true
+			break
+		}
+	}
+
+	if !hasUsefulData {
+		// Нет полезных данных - пропускаем публикацию expose
+		return nil
+	}
+
 	base := p.config.MQTTPrefix
 	topicName := p.config.GetDeviceTopicName(mac)
 
@@ -186,7 +221,18 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	}
 
 	topic := fmt.Sprintf("%s/expose/ble/%s", base, topicName)
-	return p.client.PublishJSON(topic, exposeBytes, p.config.Retain)
+	err = p.client.PublishJSON(topic, exposeBytes, p.config.Retain)
+	
+	if err == nil {
+		// Устанавливаем флаг что опубликовали успешно
+		device.Mu.Lock()
+		device.ExposePublished = true
+		device.Mu.Unlock()
+		
+		p.logger.Debug().Str("mac", mac).Msg("Expose published once, will not publish again")
+	}
+	
+	return err
 }
 
 // publishDeviceOffline — публикация offline статуса устройства
@@ -203,6 +249,90 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 
 	payloadBytes, _ := json.Marshal(payload)
 	return p.client.PublishJSON(topic, payloadBytes, p.config.Retain)
+}
+
+// publishBleStatus — публикация статуса всех устройств в топик status/ble
+func (p *Publisher) publishBleStatus() error {
+	base := p.config.MQTTPrefix
+	topic := fmt.Sprintf("%s/status/ble", base)
+
+	var status types.BleStatus
+	status.Devices = make([]types.BleStatusDevice, 0)
+
+	// Если only_known_devices=true — публикуем все известные устройства
+	if p.config.OnlyKnownDevices {
+		for mac, knownDevice := range p.config.KnownDevices {
+			device, exists := p.devices[mac]
+
+			statusDevice := types.BleStatusDevice{
+				Active:    exists && device.IsOnline(),
+				Cloud:     knownDevice.HOMEdCloud,
+				Discovery: knownDevice.HOMEdDiscovery,
+				ID:        mac,
+				Name:      knownDevice.Name,
+				Real:      true,
+			}
+
+			// Получаем expose для устройства
+			if exists {
+				homedExpose := device.GetHomedExpose()
+				statusDevice.Exposes = homedExpose.Common.Items
+				statusDevice.Options = homedExpose.Common.Options
+			}
+
+			status.Devices = append(status.Devices, statusDevice)
+		}
+	} else {
+	// Иначе публикуем только обнаруженные устройства которые есть в KnownDevices
+	// Публикуем в том же порядке что и в конфиге
+	for _, mac := range p.config.KnownDevicesOrder {
+		device, exists := p.devices[mac]
+		if !exists {
+			continue // Устройство не найдено в активных
+		}
+
+		// Добавляем в статус только устройства с полезными данными
+		hasUsefulData := false
+		
+		parsedValues := device.GetParsedValues()
+		for key := range parsedValues {
+			switch key {
+			case "temp", "humidity", "battery", "pressure", "illuminance":
+				hasUsefulData = true
+				break
+			}
+		}
+
+		if !hasUsefulData {
+			continue
+		}
+
+		knownDevice, isKnown := p.config.KnownDevices[mac]
+
+		statusDevice := types.BleStatusDevice{
+				Active:    device.IsOnline(),
+				Cloud:     isKnown && knownDevice.HOMEdCloud,
+				Discovery: isKnown && knownDevice.HOMEdDiscovery,
+				ID:        mac,
+				Name:      p.config.GetDeviceTopicName(mac),
+				Real:      true,
+			}
+
+			homedExpose := device.GetHomedExpose()
+			statusDevice.Exposes = homedExpose.Common.Items
+			statusDevice.Options = homedExpose.Common.Options
+
+			status.Devices = append(status.Devices, statusDevice)
+		}
+	}
+
+	// Маршализуем и публикуем
+	statusBytes, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+
+	return p.client.PublishJSON(topic, statusBytes, p.config.Retain)
 }
 
 // PublishHistoryValue — публикация исторического значения

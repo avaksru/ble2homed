@@ -95,11 +95,14 @@ func LoadConfig(path string) (*types.Config, error) {
 
 	// Нормализация MAC адресов в known_devices
 	normalizedKnownDevices := make(map[string]types.KnownDevice)
-	for mac, device := range config.KnownDevices {
+	var knownDevicesOrder []string
+	for mac := range config.KnownDevices {
 		normalizedMAC := types.NormalizeMACForTopic(mac)
-		normalizedKnownDevices[normalizedMAC] = device
+		normalizedKnownDevices[normalizedMAC] = config.KnownDevices[mac]
+		knownDevicesOrder = append(knownDevicesOrder, normalizedMAC)
 	}
 	config.KnownDevices = normalizedKnownDevices
+	config.KnownDevicesOrder = knownDevicesOrder
 
 	// Копируем scanInterval и scanTimeout в BLEConfig
 	if config.ScanInterval > 0 {

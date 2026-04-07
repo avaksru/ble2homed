@@ -13,6 +13,7 @@ type Config struct {
 	ScanInterval       int                     `yaml:"scanInterval" json:"scanInterval"`
 	Retain             bool                    `yaml:"retain" json:"retain"`
 	KnownDevices       map[string]KnownDevice  `yaml:"known_devices" json:"known_devices"`
+	KnownDevicesOrder  []string                `yaml:"-" json:"-"`
 	MinRSSI            int                     `yaml:"min_rssi" json:"min_rssi"`
 	BLETimeout         int                     `yaml:"ble_timeout" json:"ble_timeout"`
 	PresenceTimeout    int                     `yaml:"presence_timeout" json:"presence_timeout"`
@@ -113,6 +114,9 @@ type Device struct {
 
 	// Внутренние поля
 	Mu sync.RWMutex `json:"-"`
+	
+	// Флаг что expose уже был опубликован один раз
+	ExposePublished bool `json:"-"`
 }
 
 // ParsedValue — распарсенное значение из advertising
@@ -164,6 +168,23 @@ type DeviceExpose struct {
 // HomedExpose — стандартный формат expose для всех устройств
 type HomedExpose struct {
 	Common ExposeCommon `json:"common"`
+}
+
+// BleStatusDevice — информация об устройстве для топика status/ble
+type BleStatusDevice struct {
+	Active      bool              `json:"active"`
+	Cloud       bool              `json:"cloud"`
+	Discovery   bool              `json:"discovery"`
+	Exposes     []string          `json:"exposes"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Options     map[string]ExposeOption `json:"options"`
+	Real        bool              `json:"real"`
+}
+
+// BleStatus — информация обо всех устройствах для топика status/ble
+type BleStatus struct {
+	Devices []BleStatusDevice `json:"devices"`
 }
 
 type ExposeCommon struct {
@@ -295,40 +316,46 @@ func (d *Device) GetExposeList() []DeviceExpose {
 		})
 	}
 
-	for key, val := range d.ParsedValues {
-		expose := DeviceExpose{
-			Type:     "sensor",
-			Name:     key,
-			Property: key,
-			Unit:     val.Unit,
-		}
+	// Фиксированный порядок полей (чтобы набор exposes не менялся местами)
+	exposeOrder := []string{"temp", "humidity", "battery", "voltage", "pressure", "illuminance"}
+	
+	for _, key := range exposeOrder {
+		if val, ok := d.ParsedValues[key]; ok {
+			expose := DeviceExpose{
+				Type:     "sensor",
+				Name:     key,
+				Property: key,
+				Unit:     val.Unit,
+			}
 
-		switch val.Type {
-		case "temp":
-			expose.Name = "Temperature"
-			if expose.Unit == "" {
-				expose.Unit = "°C"
+			switch val.Type {
+			case "temp":
+				expose.Name = "Temperature"
+				expose.Property = "temperature"
+				if expose.Unit == "" {
+					expose.Unit = "°C"
+				}
+			case "humidity":
+				expose.Name = "Humidity"
+				if expose.Unit == "" {
+					expose.Unit = "%"
+				}
+				expose.Min = floatPtr(0)
+				expose.Max = floatPtr(100)
+			case "pressure":
+				expose.Name = "Pressure"
+				if expose.Unit == "" {
+					expose.Unit = "hPa"
+				}
+			case "illuminance":
+				expose.Name = "Illuminance"
+				if expose.Unit == "" {
+					expose.Unit = "lx"
+				}
 			}
-		case "humidity":
-			expose.Name = "Humidity"
-			if expose.Unit == "" {
-				expose.Unit = "%"
-			}
-			expose.Min = floatPtr(0)
-			expose.Max = floatPtr(100)
-		case "pressure":
-			expose.Name = "Pressure"
-			if expose.Unit == "" {
-				expose.Unit = "hPa"
-			}
-		case "illuminance":
-			expose.Name = "Illuminance"
-			if expose.Unit == "" {
-				expose.Unit = "lx"
-			}
-		}
 
-		exposes = append(exposes, expose)
+			exposes = append(exposes, expose)
+		}
 	}
 
 	return exposes
