@@ -22,7 +22,7 @@
       "model": ""
     }
   },
-  "presence_timeout": 60,
+  "presence_timeout": 300,
   "mqtt_host": "tcp://localhost:1883",
   "mqtt_prefix": "homed",
   "mqtt_format_json": true  

@@ -88,11 +88,20 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	if device == nil {
 		return fmt.Errorf("cannot create device: max devices limit reached")
 	}
-	
+
+	wasOffline := !device.IsOnline()
 	device.UpdateLastSeen()
 	device.RSSI = adv.RSSI
 	if adv.Name != "" {
 		device.Name = adv.Name
+	}
+
+	// Если устройство было offline — публикуем online статус
+	if wasOffline {
+		p.logger.Info().Str("mac", mac).Msg("Device came online")
+		if err := p.publishDeviceStatus(mac, "online", device.GetLastSeen()); err != nil {
+			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish online status")
+		}
 	}
 
 	// Обновляем распарсенные значения
@@ -120,7 +129,16 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	}
 
 	// Публикуем в HOMEd стиле
-	return p.publishHomed(mac, adv, parsed, device)
+	if err := p.publishHomed(mac, adv, parsed, device); err != nil {
+		return err
+	}
+
+	// Публикуем expose для HOMEd
+	if err := p.publishExpose(mac, device); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // publishHomed — публикация в стиле HOMEd
@@ -151,6 +169,40 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 	}
 
 	return nil
+}
+
+// publishExpose — публикация expose для HOMEd
+func (p *Publisher) publishExpose(mac string, device *types.Device) error {
+	base := p.config.MQTTPrefix
+	topicName := p.config.GetDeviceTopicName(mac)
+
+	// Получаем expose данные
+	homedExpose := device.GetHomedExpose()
+
+	// Публикуем expose
+	exposeBytes, err := json.Marshal(homedExpose)
+	if err != nil {
+		return err
+	}
+
+	topic := fmt.Sprintf("%s/expose/ble/%s", base, topicName)
+	return p.client.PublishJSON(topic, exposeBytes, p.config.Retain)
+}
+
+// publishDeviceOffline — публикация offline статуса устройства
+func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error {
+	base := p.config.MQTTPrefix
+	topicName := p.config.GetDeviceTopicName(mac)
+
+	topic := fmt.Sprintf("%s/device/ble/%s", base, topicName)
+
+	payload := map[string]interface{}{
+		"lastSeen": device.GetLastSeen().Unix(),
+		"status":   "offline",
+	}
+
+	payloadBytes, _ := json.Marshal(payload)
+	return p.client.PublishJSON(topic, payloadBytes, p.config.Retain)
 }
 
 // PublishHistoryValue — публикация исторического значения
@@ -208,45 +260,54 @@ func (p *Publisher) CheckOfflineDevices() {
 	p.mu.RUnlock()
 
 	now := time.Now()
-	
+
 	for mac, device := range devicesCopy {
 		// Проверяем online статус через потокобезопасные методы
 		isOnline := device.IsOnline()
 		lastSeen := device.GetLastSeen()
-		
+
 		if !isOnline {
 			continue // Уже offline
 		}
-		
+
 		// Определяем timeout для устройства
-		var timeout int
-		
-		// Если устройство известное и имеет свой presence_timeout
-		if knownDevice, exists := p.config.KnownDevices[mac]; exists && knownDevice.PresenceTimeout > 0 {
-			timeout = knownDevice.PresenceTimeout
-		} else {
-			// Используем общий presence_timeout
-			timeout = p.config.PresenceTimeout
-		}
-		
+		timeout := p.config.GetPresenceTimeout(mac)
+
 		if timeout <= 0 {
 			continue // timeout не задан, пропускаем
 		}
-		
+
 		// Проверяем, прошло ли достаточно времени
 		elapsed := now.Sub(lastSeen).Seconds()
 		if elapsed > float64(timeout) {
 			// Устройство offline — используем потокобезопасный метод
 			device.SetOnline(false)
-			
+
 			p.logger.Info().
 				Str("mac", mac).
 				Float64("elapsed", elapsed).
 				Int("timeout", timeout).
 				Msg("Device went offline (timeout)")
-			
+
 			if err := p.publishDeviceStatus(mac, "offline", lastSeen); err != nil {
 				p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish offline status")
+			}
+		}
+	}
+
+	// Если only_known_devices=true, публикуем offline для всех известных устройств
+	if p.config.OnlyKnownDevices {
+		for mac := range p.config.KnownDevices {
+			_, exists := p.devices[mac]
+			if !exists {
+				// Устройство не найдено в активных — публикуем offline
+				if err := p.publishDeviceOffline(mac, &types.Device{
+					MAC:      mac,
+					LastSeen: time.Now(),
+					Online:   false,
+				}); err != nil {
+					p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish offline status for known device")
+				}
 			}
 		}
 	}

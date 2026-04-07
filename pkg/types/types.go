@@ -161,6 +161,24 @@ type DeviceExpose struct {
 	Values   []string `json:"values,omitempty"` // для enum типов
 }
 
+// HomedExpose — стандартный формат expose для всех устройств
+type HomedExpose struct {
+	Common ExposeCommon `json:"common"`
+}
+
+type ExposeCommon struct {
+	Items   []string               `json:"items"`
+	Options map[string]ExposeOption `json:"options"`
+}
+
+type ExposeOption struct {
+	Class  string `json:"class,omitempty"`
+	Round  int    `json:"round"`
+	State  string `json:"state"`
+	Type   string `json:"type"`
+	Unit   string `json:"unit,omitempty"`
+}
+
 // NewDevice — создание нового устройства
 func NewDevice(mac string) *Device {
 	return &Device{
@@ -241,7 +259,11 @@ func (d *Device) GetFDFlat() map[string]interface{} {
 
 	for key, val := range d.ParsedValues {
 		if val.Value != nil {
-			result[key] = val.Value
+			if key == "temp" {
+				result["temperature"] = val.Value
+			} else {
+				result[key] = val.Value
+			}
 		}
 	}
 
@@ -312,6 +334,30 @@ func (d *Device) GetExposeList() []DeviceExpose {
 	return exposes
 }
 
+// GetHomedExpose — получить стандартный expose для HOMEd
+func (d *Device) GetHomedExpose() HomedExpose {
+	exposes := d.GetExposeList()
+	items := make([]string, len(exposes))
+	options := make(map[string]ExposeOption, len(exposes))
+
+	for i, expose := range exposes {
+		items[i] = expose.Property
+		options[expose.Property] = ExposeOption{
+			Round: 1,
+			State: "measurement",
+			Type:  "sensor",
+			Unit:  expose.Unit,
+		}
+	}
+
+	return HomedExpose{
+		Common: ExposeCommon{
+			Items:   items,
+			Options: options,
+		},
+	}
+}
+
 func floatPtr(f float64) *float64 {
 	return &f
 }
@@ -323,6 +369,16 @@ func (c *Config) GetDeviceTopicName(mac string) string {
 		return knownDevice.Name
 	}
 	return normalizedMAC
+}
+
+// GetPresenceTimeout — получить таймаут присутствия для устройства
+// Сначала ищем индивидуальный таймаут в KnownDevices, если не найден используем общий
+func (c *Config) GetPresenceTimeout(mac string) int {
+	normalizedMAC := NormalizeMACForTopic(mac)
+	if knownDevice, exists := c.KnownDevices[normalizedMAC]; exists && knownDevice.PresenceTimeout > 0 {
+		return knownDevice.PresenceTimeout
+	}
+	return c.PresenceTimeout
 }
 
 // NormalizeMACForTopic — нормализация MAC-адреса для использования в топиках (lowercase)
