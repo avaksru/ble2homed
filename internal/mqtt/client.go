@@ -57,9 +57,12 @@ func (c *Client) Connect() error {
 	opts := mqtt.NewClientOptions().
 		AddBroker(c.config.Broker).
 		SetClientID(c.config.ClientID).
-		SetCleanSession(true).
+		SetCleanSession(false).
 		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(2 * time.Second).
 		SetMaxReconnectInterval(10 * time.Second).
+		SetResumeSubs(true).
 		SetKeepAlive(30 * time.Second).
 		SetPingTimeout(10 * time.Second)
 

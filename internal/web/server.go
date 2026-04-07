@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -63,9 +64,16 @@ func (s *Server) Start() error {
 
 // Stop — остановка веб-сервера
 func (s *Server) Stop() {
-	if s.server != nil {
-		s.logger.Info().Msg("Stopping web server")
-		s.server.Close()
+	if s.server == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s.logger.Info().Msg("Stopping web server")
+	if err := s.server.Shutdown(ctx); err != nil {
+		s.logger.Error().Err(err).Msg("Web server shutdown failed")
 	}
 }
 

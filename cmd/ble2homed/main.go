@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -53,31 +54,18 @@ func main() {
 		Str("base_prefix", cfg.Publish.BasePrefix).
 		Msg("Starting ble2homed")
 
-	// Контекст для graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	// Контекст для graceful shutdown по сигналам ОС
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Канал для сигналов ОС
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Запуск приложения
 	if err := run(ctx, cfg); err != nil {
-		log.Fatal().Err(err).Msg("Failed to start application")
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			log.Info().Err(err).Msg("Shutdown complete")
+			return
+		}
+		log.Fatal().Err(err).Msg("Failed to run application")
 	}
 
-	// Ожидание сигнала завершения
-	sig := <-sigChan
-	log.Info().Str("signal", sig.String()).Msg("Received shutdown signal")
-
-	// Graceful shutdown
-	log.Info().Msg("Starting graceful shutdown...")
-	
-	// Публикуем offline статус для всех устройств
-	log.Info().Msg("Publishing offline status for all devices...")
-	
-	cancel()
-	time.Sleep(2 * time.Second)
 	log.Info().Msg("Shutdown complete")
 }
 
@@ -118,12 +106,6 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	mqttClient := mqtt.NewClient(mqttConfig, log.Logger)
 
-	// Подключаемся к MQTT с повторными попытками
-	if err := connectWithRetry(ctx, mqttClient, 20*time.Second); err != nil {
-		return fmt.Errorf("failed to connect to MQTT after retries: %w", err)
-	}
-	defer mqttClient.Disconnect()
-
 	// 2. Создаем publisher
 	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger)
 
@@ -146,9 +128,17 @@ func run(ctx context.Context, cfg *types.Config) error {
 		logger:    log.Logger,
 	}
 
-	if err := subscriber.SubscribeCommands(commandHandler); err != nil {
-		log.Warn().Err(err).Msg("Failed to subscribe to commands")
+	mqttClient.SetConnectHandler(func() {
+		if err := subscriber.SubscribeCommands(commandHandler); err != nil {
+			log.Error().Err(err).Msg("Failed to subscribe to command topics on MQTT reconnect")
+		}
+	})
+
+	// Подключаемся к MQTT с повторными попытками
+	if err := connectWithRetry(ctx, mqttClient, 20*time.Second); err != nil {
+		return fmt.Errorf("failed to connect to MQTT after retries: %w", err)
 	}
+	defer mqttClient.Disconnect()
 
 	// 6. Создаем BLE сканер
 	scanner, err := ble.NewScanner(&cfg.BLE, log.Logger)
@@ -255,16 +245,16 @@ func periodicTasks(ctx context.Context, publisher *mqtt.Publisher, hadiscovery *
 			publisher.CheckOfflineDevices()
 
 		case <-historyTicker.C:
-		// Публикация исторических данных
-		for mac, device := range publisher.GetAllDevices() {
-			averages := historyManager.GetAllAverages(mac)
-			for field, intervals := range averages {
-				for interval, avg := range intervals {
-					publisher.PublishHistoryValue(mac, field, interval, avg)
+			// Публикация исторических данных
+			for mac, device := range publisher.GetAllDevices() {
+				averages := historyManager.GetAllAverages(mac)
+				for field, intervals := range averages {
+					for interval, avg := range intervals {
+						publisher.PublishHistoryValue(mac, field, interval, avg)
+					}
 				}
+				_ = device
 			}
-			_ = device
-		}
 
 		case <-cleanupTicker.C:
 			// Очистка старых данных (7 дней)
