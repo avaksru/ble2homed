@@ -109,11 +109,26 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 	base := p.config.Publish.BasePrefix
 	topicName := p.config.GetDeviceTopicName(mac)
 
-	// fd/{name_or_mac} — текущие значения как плоский JSON
-	fdFlat := device.GetFDFlat()
-	fdBytes, _ := json.Marshal(fdFlat)
-	if err := p.client.PublishJSON(fmt.Sprintf("%s/fd/%s", base, topicName), fdBytes, false); err != nil {
-		return err
+	// Проверяем есть ли полезные данные для публикации
+	hasUsefulData := false
+	for key, val := range parsed {
+		switch key {
+		case "temp", "humidity", "battery", "pressure", "illuminance":
+			if val.Value != nil {
+				hasUsefulData = true
+				break
+			}
+		}
+	}
+
+	// Публикуем только если есть полезные данные
+	if hasUsefulData {
+		// fd/{name_or_mac} — текущие значения как плоский JSON
+		fdFlat := device.GetFDFlat()
+		fdBytes, _ := json.Marshal(fdFlat)
+		if err := p.client.PublishJSON(fmt.Sprintf("%s/fd/%s", base, topicName), fdBytes, false); err != nil {
+			return err
+		}
 	}
 
 	return nil
