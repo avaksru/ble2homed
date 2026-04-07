@@ -122,23 +122,25 @@ func (s *Scanner) scanLoop(ctx context.Context) {
 				}
 			}
 
-			// Пауза между циклами сканирования
-			pauseDuration := time.Duration(s.config.RestartPause) * time.Second
-			if pauseDuration <= 0 {
-				pauseDuration = 5 * time.Second // по умолчанию 5 секунд
-			}
+	// Пауза между циклами сканирования
+	pauseDuration := time.Duration(s.config.RestartPause) * time.Second
 
-			s.logger.Info().
-				Dur("pause", pauseDuration).
-				Msg("Pausing before next scan cycle")
+	if pauseDuration > 0 {
+		s.logger.Info().
+			Dur("pause", pauseDuration).
+			Msg("Pausing before next scan cycle")
 
-			select {
-			case <-ctx.Done():
-				s.logger.Info().Msg("Scan loop stopped by context during pause")
-				return
-			case <-time.After(pauseDuration):
-				continue
-			}
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Msg("Scan loop stopped by context during pause")
+			return
+		case <-time.After(pauseDuration):
+			continue
+		}
+	}
+
+	// Если пауза 0 - запускаем сканирование сразу же без задержки
+	s.logger.Debug().Msg("No pause between scan cycles, restarting immediately")
 		}
 	}
 }
@@ -147,11 +149,16 @@ func (s *Scanner) scanLoop(ctx context.Context) {
 func (s *Scanner) doScan(ctx context.Context) error {
 	// Создаем контекст с таймаутом для этого цикла сканирования
 	scanDuration := time.Duration(s.config.ScanInterval) * time.Second
-	if scanDuration <= 0 {
-		scanDuration = 60 * time.Second // по умолчанию 60 секунд
-	}
+	var scanCtx context.Context
+	var scanCancel context.CancelFunc
 
-	scanCtx, scanCancel := context.WithTimeout(ctx, scanDuration)
+	if scanDuration <= 0 {
+		// 0 = непрерывное сканирование без таймаута
+		scanCtx = ctx
+		scanCancel = func() {}
+	} else {
+		scanCtx, scanCancel = context.WithTimeout(ctx, scanDuration)
+	}
 	defer scanCancel()
 
 	// Обработчик advertising пакетов
@@ -226,9 +233,13 @@ func (s *Scanner) doScan(ctx context.Context) error {
 	}
 
 	// Запускаем сканирование
-	s.logger.Info().
-		Dur("duration", scanDuration).
-		Msg("Starting BLE scan")
+	if scanDuration > 0 {
+		s.logger.Info().
+			Dur("duration", scanDuration).
+			Msg("Starting BLE scan")
+	} else {
+		s.logger.Info().Msg("Starting continuous BLE scan (no timeout)")
+	}
 
 	// Запускаем сканирование в горутине
 	errChan := make(chan error, 1)

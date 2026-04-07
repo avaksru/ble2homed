@@ -1,7 +1,7 @@
 {
-  "only_known_devices": false,
-  "scanTimeout": 60,
-  "scanInterval": 5,
+  "only_known_devices": true,
+  "scanTimeout": 6,
+  "scanInterval": 50,
   "retain": false,
   "known_devices": {
     "c0:52:3f:50:42:c9": {
@@ -11,12 +11,10 @@
       "name": "band",
       "homed_cloud": false,
       "homed_discovery": false,
-      "min_rssi": -80,
       "cache_state": false
     },
-    "a4:c1:55:66:77:88": {
-      "name": "LYWSD03MMC",
-      "bind_key": "0B49A588B2B7122FDFB1661C323E52F1"
+    "a4:c1:38:aa:31:fa": {
+      "name": "LYWSD03MMC"
     },
     "17:75:bd:52:cc:1d": {
       "name": "pvvx",
@@ -24,23 +22,8 @@
       "model": ""
     }
   },
-  "min_rssi": -90,
-  "ble_timeout": 20,
   "presence_timeout": 60,
-  "max_connections": 4,
-  "connection_timeout": 20,
-  "advertised_services": {
-    "ffff": {
-      "name": "level"
-    }
-  },
-  "http_proxy": false,
   "mqtt_host": "tcp://localhost:1883",
   "mqtt_prefix": "homed",
-  "mqtt_advertise": false,
-  "mqtt_advertise_manufacturer_data": false,
-  "mqtt_advertise_service_data": false,
-  "mqtt_format_json": true,
-  "mqtt_format_decoded_key_topic": false,
-  "homed": true
+  "mqtt_format_json": true  
 }

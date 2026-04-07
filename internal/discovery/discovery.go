@@ -26,8 +26,5 @@ func (d *Discovery) PublishDiscovery(device interface{}, basePrefix string) {
 
 // PublishAvailability — публикация топика доступности
 func (d *Discovery) PublishAvailability(basePrefix string) {
-	topic := basePrefix + "/status"
-	if err := d.client.Publish(topic, "online", false); err != nil {
-		d.logger.Error().Err(err).Msg("Failed to publish availability")
-	}
+	// Метод больше не используется, статус сервиса публикуется в MQTT клиенте в топик {prefix}/service/ble
 }

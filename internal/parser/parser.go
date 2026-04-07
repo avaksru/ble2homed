@@ -24,6 +24,9 @@ const (
 
 	// HomeAssistant/Puck.js company ID
 	CompanyHomeAssistant = 0x0590
+
+	// ATC1441 company ID
+	CompanyATC = 0x0001
 )
 
 // ParseBLEData — полный парсинг BLE advertising данных
@@ -44,6 +47,14 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 			}
 		}
 
+		// ATC (ATC1441) формат
+		if int(companyID) == CompanyATC && len(adv.Manufacturer) >= 15 {
+			parsed := parseATCData(adv.Manufacturer[2:], now)
+			for k, v := range parsed {
+				result[k] = v
+			}
+		}
+
 		// Сохраняем raw manufacturer data
 		result["manufacturer/"+companyHex] = types.ParsedValue{
 			Value:     hex.EncodeToString(adv.Manufacturer),
@@ -56,10 +67,11 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	// Парсинг service data
 	for _, sd := range adv.ServiceData {
 		uuid := strings.ToUpper(sd.UUID)
+		beforeCount := len(result)
 
 		// Известные сервисы
-		switch uuid {
-		case ServiceTemperature:
+		switch {
+		case strings.Contains(uuid, ServiceTemperature):
 			if temp, ok := parseTemperature(sd.Data); ok {
 				result["temp"] = types.ParsedValue{
 					Value:     temp,
@@ -69,17 +81,36 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 					Timestamp: now,
 				}
 			}
-		case ServiceHumidity:
-			if humidity, ok := parseHumidity(sd.Data); ok {
-				result["humidity"] = types.ParsedValue{
-					Value:     humidity,
-					Unit:      "%",
-					Type:      "humidity",
-					Source:    "service_data",
-					Timestamp: now,
+		case strings.Contains(uuid, ServiceHumidity):
+
+			// Стандартный GATT влажность всегда 2 байта. Если больше - это ATC1441!
+			if len(sd.Data) == 2 {
+				if humidity, ok := parseHumidity(sd.Data); ok {
+					result["humidity"] = types.ParsedValue{
+						Value:     humidity,
+						Unit:      "%",
+						Type:      "humidity",
+						Source:    "service_data",
+						Timestamp: now,
+					}
+				}
+			} else if len(sd.Data) >= 13 {
+				//* fmt.Printf ("%s DBG ✅ Это ATC1441! Вызываю парсер...\n",
+				//	time.Now().Format("3:04PM"))
+				// Это формат ATC1441!
+				parsed := parseATCServiceData(sd.Data, now)
+				//* fmt.Printf ("%s DBG Парсер вернул %d полей\n",
+				//	time.Now().Format("3:04PM"),
+				//	len(parsed))
+				for k, v := range parsed {
+					result[k] = v
+					//* fmt.Printf ("%s DBG Добавил поле: %s = %v\n",
+					//	time.Now().Format("3:04PM"),
+					//	k,
+					//	v.Value)
 				}
 			}
-		case ServiceBattery:
+		case strings.Contains(uuid, ServiceBattery):
 			if battery, ok := parseBattery(sd.Data); ok {
 				result["battery"] = types.ParsedValue{
 					Value:     battery,
@@ -97,13 +128,17 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 			}
 		}
 
-		// Сохраняем raw service data
-		result["service/"+uuid] = types.ParsedValue{
-			Value:     parseServiceDataToJSON(sd.Data),
-			Type:      "service_data",
-			Source:    "service_data",
-			Timestamp: now,
+		// Выводим лог только если удалось распарсить полезные значения
+		if len(result) > beforeCount {
+			//* fmt.Printf ("%s INF Результат парсинга service data mac=%s uuid=%s data=%s (размер: %d байт)\n",
+			//	time.Now().Format("3:04PM"),
+			//	strings.ToLower(adv.Addr),
+			//	uuid,
+			//	hex.EncodeToString(sd.Data),
+			//	len(sd.Data))
 		}
+
+
 	}
 
 	// Попытка распознать Eddystone
@@ -522,4 +557,141 @@ func isHexString(s string) bool {
 	}
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+
+// parseATCData — парсинг данных формата ATC1441 (псевдоним для обратной совместимости)
+func parseATCData(data []byte, now time.Time) map[string]types.ParsedValue {
+	return parseATCServiceData(data, now)
+}
+
+// parseATCServiceData — парсинг данных формата ATC1441
+// Поддерживает 3 формата:
+//  1. Стандартный ATC1441 13 байт: MAC(6) | Температура(2) | Влажность(1) | Батарея(1) | Напряжение(2) | Флаги(1)
+//  2. PVVX формат 15 байт: MAC(6) | Температура(2) | Влажность(2) | Батарея(1) | Напряжение(2) | Счетчик(1) | Флаги(1) | RSSI(1)
+//  3. BTHome v2 формат
+func parseATCServiceData(data []byte, now time.Time) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue)
+
+	
+	if len(data) < 13 {
+		return result
+	}
+
+	var tempRaw int16
+	var humidity float64
+	var battery int
+	var voltageRaw uint16
+
+	if len(data) == 13 {
+		// ✅ Стандартный ATC1441 формат (Big Endian)
+		tempRaw = int16(binary.BigEndian.Uint16(data[6:8]))
+		humidity = float64(data[8])
+		battery = int(data[9])
+		voltageRaw = binary.BigEndian.Uint16(data[10:12])
+		
+		// В ATC1441 температура в десятых долях градуса!
+		temp := float64(tempRaw) / 10.0
+
+		//* fmt.Printf ("%s DBG Парсинг ATC (стандартный 13 байт): len=%d data=%s tempRaw=%d temp=%.2f°C hum=%d%% bat=%d%% volt=%dmV\n",
+		//	time.Now().Format("3:04PM"),
+		//	len(data),
+		//	hex.EncodeToString(data),
+		//	int(tempRaw),
+		//	temp,
+		//	int(humidity),
+		//	battery,
+		//	int(voltageRaw))
+
+		result["temp"] = types.ParsedValue{
+			Value:     temp,
+			Unit:      "°C",
+			Type:      "temp",
+			Source:    "ATC1441",
+			Timestamp: now,
+		}
+
+	} else if len(data) >= 15 {
+		// ✅ PVVX / новый формат (Little Endian)
+		// ОФИЦИАЛЬНЫЙ ФОРМАТ PVVX:
+		// 0-5: MAC адрес (обратный порядок)
+		// 6-7: Температура (int16, сотые доли °C)
+		// 8-9: Влажность (uint16, сотые доли %)
+		// 10-11: Напряжение (uint16, мВ)
+		// 12: Счетчик пакетов
+		// 13: Флаги
+		// 14: RSSI
+		
+		tempRaw = int16(binary.LittleEndian.Uint16(data[6:8]))
+		humidityRaw := binary.LittleEndian.Uint16(data[8:10])
+		voltageRaw = binary.LittleEndian.Uint16(data[10:12])
+		
+		// В PVVX температура в сотых долях, влажность в сотых долях %
+		temp := float64(tempRaw) / 100.0
+		humidity = float64(humidityRaw) / 100.0
+
+		// ✅ Батарея в PVVX НЕ передаётся явно! Рассчитываем по напряжению:
+		// 2.1В = 0%, 3.1В = 100% линейная шкала
+		voltage := float64(voltageRaw) / 1000.0
+		if voltage < 2.1 {
+			battery = 0
+		} else if voltage > 3.1 {
+			battery = 100
+		} else {
+			battery = int((voltage - 2.1) * 100.0)
+		}
+
+		//* fmt.Printf ("%s DBG Парсинг ATC (PVVX 15 байт): len=%d data=%s tempRaw=%d temp=%.2f°C humRaw=%d hum=%.1f%% volt=%dmV bat=%d%% (рассчитано)\n",
+		//	time.Now().Format("3:04PM"),
+		//	len(data),
+		//	hex.EncodeToString(data),
+		//	int(tempRaw),
+		//	temp,
+		//	int(humidityRaw),
+		//	humidity,
+		//	int(voltageRaw),
+		//	battery)
+
+		result["temp"] = types.ParsedValue{
+			Value:     temp,
+			Unit:      "°C",
+			Type:      "temp",
+			Source:    "ATC1441/PVVX",
+			Timestamp: now,
+		}
+	}
+
+	// Общие поля для всех форматов
+	result["humidity"] = types.ParsedValue{
+		Value:     humidity,
+		Unit:      "%",
+		Type:      "humidity",
+		Source:    "ATC1441",
+		Timestamp: now,
+	}
+
+	result["battery"] = types.ParsedValue{
+		Value:     battery,
+		Unit:      "%",
+		Type:      "battery",
+		Source:    "ATC1441",
+		Timestamp: now,
+	}
+
+	voltage := float64(voltageRaw) / 1000.0
+	result["voltage"] = types.ParsedValue{
+		Value:     voltage,
+		Unit:      "V",
+		Type:      "voltage",
+		Source:    "ATC1441",
+		Timestamp: now,
+	}
+
+	//* fmt.Printf ("%s ✅ УСПЕШНО распарсен ATC: temp=%.2f°C humidity=%.1f%% battery=%d%% voltage=%.3fV\n",
+	//	time.Now().Format("3:04PM"),
+	//	result["temp"].Value.(float64),
+	//	humidity,
+	//	battery,
+	//	voltage)
+
+	return result
 }

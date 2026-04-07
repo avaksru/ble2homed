@@ -72,9 +72,9 @@ func (c *Client) Connect() error {
 
 	// Настройка Last Will and Testament (LWT)
 	if c.config.Prefix != "" {
-		willTopic := fmt.Sprintf("%s/services/ble", c.config.Prefix)
-		willPayload := []byte(`{"status":"offline"}`)
-		opts.SetWill(willTopic, string(willPayload), c.config.QoS, true)
+		willTopic := fmt.Sprintf("%s/service/ble", c.config.Prefix)
+		willPayload := `{"status":"offline"}`
+		opts.SetWill(willTopic, willPayload, c.config.QoS, true)
 		c.logger.Info().Str("topic", willTopic).Msg("LWT configured")
 	}
 
@@ -137,6 +137,17 @@ func (c *Client) Connect() error {
 // Disconnect — отключение от MQTT брокера
 func (c *Client) Disconnect() {
 	if c.client != nil && c.client.IsConnected() {
+		// При нормальном отключении брокер не отправляет LWT, поэтому публикуем статус offline явно
+		if c.config.Prefix != "" {
+			topic := fmt.Sprintf("%s/service/ble", c.config.Prefix)
+			payload := []byte(`{"status":"offline"}`)
+			if err := c.PublishJSON(topic, payload, true); err != nil {
+				c.logger.Error().Err(err).Msg("Failed to publish offline status on disconnect")
+			}
+			// Небольшая пауза чтобы сообщение успело уйти до отключения
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		c.client.Disconnect(250)
 		c.mu.Lock()
 		c.connected = false
@@ -257,12 +268,12 @@ func (c *Client) GetClientID() string {
 	return c.config.ClientID
 }
 
-// PublishOnlineStatus — публикация статуса "online" в топик services/ble
+// PublishOnlineStatus — публикация статуса "online" в топик service/ble
 func (c *Client) PublishOnlineStatus() error {
 	if c.config.Prefix == "" {
 		return nil
 	}
-	topic := fmt.Sprintf("%s/services/ble", c.config.Prefix)
+	topic := fmt.Sprintf("%s/service/ble", c.config.Prefix)
 	payload := []byte(`{"status":"online"}`)
 	return c.PublishJSON(topic, payload, true)
 }

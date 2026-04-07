@@ -93,6 +93,14 @@ func LoadConfig(path string) (*types.Config, error) {
 		config.Publish.BasePrefix = config.MQTTPrefix
 	}
 
+	// Нормализация MAC адресов в known_devices
+	normalizedKnownDevices := make(map[string]types.KnownDevice)
+	for mac, device := range config.KnownDevices {
+		normalizedMAC := types.NormalizeMACForTopic(mac)
+		normalizedKnownDevices[normalizedMAC] = device
+	}
+	config.KnownDevices = normalizedKnownDevices
+
 	// Копируем scanInterval и scanTimeout в BLEConfig
 	if config.ScanInterval > 0 {
 		config.BLE.ScanInterval = config.ScanInterval
@@ -102,10 +110,11 @@ func LoadConfig(path string) (*types.Config, error) {
 	}
 
 	// Устанавливаем значения по умолчанию для BLE, если не заданы
-	if config.BLE.ScanInterval <= 0 {
+	// 0 = непрерывное сканирование без пауз
+	if config.BLE.ScanInterval < 0 {
 		config.BLE.ScanInterval = 60
 	}
-	if config.BLE.RestartPause <= 0 {
+	if config.BLE.RestartPause < 0 {
 		config.BLE.RestartPause = 5
 	}
 

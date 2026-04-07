@@ -100,6 +100,25 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		device.SetParsedValue(key, val)
 	}
 
+	// Логируем распарсенные полезные данные
+	usefulFields := map[string]interface{}{}
+	for key, val := range parsed {
+		switch key {
+		case "temp", "humidity", "battery", "pressure", "illuminance":
+			if val.Value != nil {
+				usefulFields[key] = val.Value
+			}
+		}
+	}
+
+	if len(usefulFields) > 0 {
+		logEvent := p.logger.Info().Str("mac", mac)
+		for k, v := range usefulFields {
+			logEvent = logEvent.Interface(k, v)
+		}
+		logEvent.Msg("Device sensor data parsed")
+	}
+
 	// Публикуем в HOMEd стиле
 	return p.publishHomed(mac, adv, parsed, device)
 }

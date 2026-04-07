@@ -160,7 +160,8 @@ func run(ctx context.Context, cfg *types.Config) error {
 	scanner.SetAdvertisementHandler(func(adv types.Advertisement) {
 		// Фильтр: если only_known_devices = true, пропускаем неизвестные устройства
 		if cfg.OnlyKnownDevices {
-			if _, known := cfg.KnownDevices[adv.Addr]; !known {
+			normalizedMAC := types.NormalizeMACForTopic(adv.Addr)
+			if _, known := cfg.KnownDevices[normalizedMAC]; !known {
 				log.Debug().
 					Str("mac", adv.Addr).
 					Msg("Skipping unknown device (only_known_devices=true)")

@@ -233,6 +233,7 @@ func (d *Device) GetFDFlat() map[string]interface{} {
 
 	result := make(map[string]interface{})
 	result["rssi"] = d.RSSI
+	result["last"] = d.LastSeen.Unix()
 
 	if d.Battery != nil {
 		result["battery"] = *d.Battery
