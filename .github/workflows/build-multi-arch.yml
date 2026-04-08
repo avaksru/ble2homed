@@ -221,23 +221,13 @@ jobs:
           file "${OUTPUT_NAME}" || true
           echo "::endgroup::"
 
-      - name: Create checksums
-        run: |
-          cd "${{ github.workspace }}"
-          # Создаём SHA256-суммы для всех ble2homed-* файлов
-          sha256sum ble2homed-* > checksums-${{ matrix.artifact_suffix }}.sha256
-          echo "::group::SHA256 checksums"
-          cat checksums-${{ matrix.artifact_suffix }}.sha256
-          echo "::endgroup::"
-
       - name: Compress artifacts
         run: |
           cd "${{ github.workspace }}"
           BINARY="${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
-          CHECKSUM="checksums-${{ matrix.artifact_suffix }}.sha256"
 
-          # Создаём tar.gz архив с бинарником и чексуммой
-          tar czf "${BINARY}.tar.gz" "${BINARY}" "${CHECKSUM}"
+          # Создаём tar.gz архив только с бинарником
+          tar czf "${BINARY}.tar.gz" "${BINARY}"
 
           echo "::group::Archive info"
           ls -lh "${BINARY}.tar.gz"
@@ -250,7 +240,6 @@ jobs:
           name: artifact-${{ matrix.artifact_suffix }}
           path: |
             ble2homed-${{ matrix.artifact_suffix }}.tar.gz
-            checksums-${{ matrix.artifact_suffix }}.sha256
           retention-days: 30
 
   # ===========================================================================
@@ -295,20 +284,11 @@ jobs:
         run: |
           mkdir -p release-files
 
-          # Собираем все tar.gz и sha256 файлы из артефактов
+          # Собираем все tar.gz файлы из артефактов
           find artifacts -name "*.tar.gz" -exec cp {} release-files/ \;
-          find artifacts -name "*.sha256" -exec cp {} release-files/ \;
-
-          # Генерируем общий файл с SHA256-суммами
-          cd release-files
-          cat *.sha256 > SHA256SUMS.txt
 
           echo "::group::Release files"
-          ls -lh
-          echo "::endgroup::"
-
-          echo "::group::SHA256SUMS.txt"
-          cat SHA256SUMS.txt
+          ls -lh release-files/
           echo "::endgroup::"
 
       - name: Create GitHub Release
@@ -329,12 +309,6 @@ jobs:
             |----------|-------------|
             | Linux | amd64, armv7, arm64, riscv64, mips, mips64, ppc64le, s390x |
 
-            ### Verification
-
-            SHA256 checksums are provided in `SHA256SUMS.txt`. Verify with:
-            ```bash
-            sha256sum -c SHA256SUMS.txt
-            ```
 
             ### Installation
 
@@ -384,13 +358,9 @@ jobs:
           mkdir -p release-files
 
           find artifacts -name "*.tar.gz" -exec cp {} release-files/ \;
-          find artifacts -name "*.sha256" -exec cp {} release-files/ \;
-
-          cd release-files
-          cat *.sha256 > SHA256SUMS.txt
 
           echo "::group::Nightly release files"
-          ls -lh
+          ls -lh release-files/
           echo "::endgroup::"
 
       - name: Delete old nightly release
@@ -417,8 +387,6 @@ jobs:
 
             Built from commit: `${{ github.sha }}`
 
-            ### SHA256 Checksums
-            See `SHA256SUMS.txt` in the release assets.
           files: |
             release-files/*
         env:
