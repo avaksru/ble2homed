@@ -107,7 +107,7 @@ history:
 
 web:
   enabled: false
-  port: 8080
+  port: 8181
 
 log:
   level: "info"       # debug | info | warn | error
