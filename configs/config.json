@@ -1,7 +1,7 @@
 {
   "only_known_devices": true,
-  "scanTimeout": 6,
-  "scanInterval": 50,
+  "scanTimeout": 0,
+  "scanInterval": 0,
   "retain": false,
   "known_devices": {
     "c0:52:3f:50:42:c9": {
@@ -14,7 +14,10 @@
       "cache_state": false
     },
     "a4:c1:38:aa:31:fa": {
-      "name": "LYWSD03MMC"
+      "name": "LYWSD03MMC",	  
+      "homed_cloud": true,
+      "homed_discovery": true,
+	  "presence_timeout": 60
     },
     "17:75:bd:52:cc:1d": {
       "name": "pvvx",
@@ -22,7 +25,7 @@
       "model": ""
     }
   },
-  "presence_timeout": 300,
+  "presence_timeout": 60,
   "mqtt_host": "tcp://localhost:1883",
   "mqtt_prefix": "homed",
   "mqtt_format_json": true  

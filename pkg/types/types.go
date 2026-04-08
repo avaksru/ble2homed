@@ -194,7 +194,6 @@ type ExposeCommon struct {
 
 type ExposeOption struct {
 	Class  string `json:"class,omitempty"`
-	Round  int    `json:"round"`
 	State  string `json:"state"`
 	Type   string `json:"type"`
 	Unit   string `json:"unit,omitempty"`
@@ -370,7 +369,6 @@ func (d *Device) GetHomedExpose() HomedExpose {
 	for i, expose := range exposes {
 		items[i] = expose.Property
 		options[expose.Property] = ExposeOption{
-			Round: 1,
 			State: "measurement",
 			Type:  "sensor",
 			Unit:  expose.Unit,
