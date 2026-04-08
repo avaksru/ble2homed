@@ -629,16 +629,8 @@ func parseATCServiceData(data []byte, now time.Time) map[string]types.ParsedValu
 		temp := float64(tempRaw) / 100.0
 		humidity = float64(humidityRaw) / 100.0
 
-		// ✅ Батарея в PVVX НЕ передаётся явно! Рассчитываем по напряжению:
-		// 2.1В = 0%, 3.1В = 100% линейная шкала
-		voltage := float64(voltageRaw) / 1000.0
-		if voltage < 2.1 {
-			battery = 0
-		} else if voltage > 3.1 {
-			battery = 100
-		} else {
-			battery = int((voltage - 2.1) * 100.0)
-		}
+		// ✅ Батарея в PVVX ПЕРЕДАЁТСЯ ЯВНО! Находится в байте 12!
+		battery = int(data[12])
 
 		//* fmt.Printf ("%s DBG Парсинг ATC (PVVX 15 байт): len=%d data=%s tempRaw=%d temp=%.2f°C humRaw=%d hum=%.1f%% volt=%dmV bat=%d%% (рассчитано)\n",
 		//	time.Now().Format("3:04PM"),
