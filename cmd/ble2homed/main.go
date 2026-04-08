@@ -170,9 +170,15 @@ func run(ctx context.Context, cfg *types.Config) error {
 			Msg("BLE advertisement processed")
 
 		// Публикуем через publisher
+		wasNew := publisher.IsDeviceNew(adv.Addr)
 		if err := publisher.PublishAdvertisement(adv.Addr, adv, parsed); err != nil {
 			log.Error().Err(err).Str("mac", adv.Addr).Msg("Failed to publish advertisement")
 			return
+		}
+
+		// Если это новое устройство, сразу публикуем обновленный BLE статус
+		if wasNew {
+			publisher.PublishBleStatusIfChanged()
 		}
 
 		// Добавляем в историю
@@ -227,6 +233,9 @@ func periodicTasks(ctx context.Context, publisher *mqtt.Publisher, hadiscovery *
 	historyTicker := time.NewTicker(10 * time.Second)
 	defer historyTicker.Stop()
 
+	bleStatusTicker := time.NewTicker(60 * time.Second)
+	defer bleStatusTicker.Stop()
+
 	cleanupTicker := time.NewTicker(1 * time.Hour)
 	defer cleanupTicker.Stop()
 
@@ -243,6 +252,10 @@ func periodicTasks(ctx context.Context, publisher *mqtt.Publisher, hadiscovery *
 			hadiscovery.PublishAvailability(cfg.Publish.BasePrefix)
 			// Проверка устройств на offline по presence_timeout
 			publisher.CheckOfflineDevices()
+
+		case <-bleStatusTicker.C:
+			// Публикация BLE статуса (только если изменилось)
+			publisher.PublishBleStatusIfChanged()
 
 		case <-historyTicker.C:
 			// Публикация исторических данных

@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -12,12 +13,15 @@ import (
 
 // Publisher — публикация данных в MQTT с поддержкой разных режимов
 type Publisher struct {
-	client     *Client
-	config     *types.Config
-	logger     zerolog.Logger
-	devices    map[string]*types.Device
-	mu         sync.RWMutex
-	maxDevices int // максимальное количество устройств
+	client              *Client
+	config              *types.Config
+	logger              zerolog.Logger
+	devices             map[string]*types.Device
+	deviceCreatedTimes  map[string]time.Time // время создания каждого устройства
+	mu                  sync.RWMutex
+	maxDevices          int    // максимальное количество устройств
+	lastBleStatusHash   string // хэш последнего опубликованного status/ble
+	lastDeviceAddedTime time.Time
 }
 
 // NewPublisher — создание нового publisher
@@ -27,11 +31,12 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger) *
 		maxDevices = config.MaxConnections
 	}
 	return &Publisher{
-		client:     client,
-		config:     config,
-		logger:     logger.With().Str("component", "publisher").Logger(),
-		devices:    make(map[string]*types.Device),
-		maxDevices: maxDevices,
+		client:             client,
+		config:             config,
+		logger:             logger.With().Str("component", "publisher").Logger(),
+		devices:            make(map[string]*types.Device),
+		deviceCreatedTimes: make(map[string]time.Time),
+		maxDevices:         maxDevices,
 	}
 }
 
@@ -58,7 +63,9 @@ func (p *Publisher) GetOrCreateDevice(mac string) *types.Device {
 
 	device := types.NewDevice(normalizedMAC)
 	p.devices[normalizedMAC] = device
+	p.deviceCreatedTimes[normalizedMAC] = time.Now()
 	p.logger.Info().Str("mac", normalizedMAC).Msg("New device discovered")
+	p.lastDeviceAddedTime = time.Now()
 	return device
 }
 
@@ -80,6 +87,18 @@ func (p *Publisher) GetAllDevices() map[string]*types.Device {
 		result[k] = v
 	}
 	return result
+}
+
+// IsDeviceNew — проверка, является ли устройство недавно добавленным
+// Внутренне вызывает GetOrCreateDevice для корректного отслеживания
+func (p *Publisher) IsDeviceNew(mac string) bool {
+	p.mu.RLock()
+	normalizedMAC := types.NormalizeMACForTopic(mac)
+	_, exists := p.devices[normalizedMAC]
+	p.mu.RUnlock()
+
+	// Если устройства не было в момента проверки, оно новое
+	return !exists
 }
 
 // PublishAdvertisement — публикация advertising данных в HOMEd стиле
@@ -142,11 +161,6 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		return err
 	}
 
-	// Публикуем статус всех устройств только при изменениях
-	if err := p.publishBleStatus(); err != nil {
-		p.logger.Error().Err(err).Msg("Failed to publish ble status")
-	}
-
 	return nil
 }
 
@@ -186,14 +200,14 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	device.Mu.RLock()
 	alreadyPublished := device.ExposePublished
 	device.Mu.RUnlock()
-	
+
 	if alreadyPublished {
 		return nil
 	}
 
 	// Публикуем только если есть полезные сенсорные данные
 	hasUsefulData := false
-	
+
 	parsedValues := device.GetParsedValues()
 	for key := range parsedValues {
 		switch key {
@@ -222,16 +236,16 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 
 	topic := fmt.Sprintf("%s/expose/ble/%s", base, topicName)
 	err = p.client.PublishJSON(topic, exposeBytes, p.config.Retain)
-	
+
 	if err == nil {
 		// Устанавливаем флаг что опубликовали успешно
 		device.Mu.Lock()
 		device.ExposePublished = true
 		device.Mu.Unlock()
-		
+
 		p.logger.Debug().Str("mac", mac).Msg("Expose published once, will not publish again")
 	}
-	
+
 	return err
 }
 
@@ -252,87 +266,80 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 }
 
 // publishBleStatus — публикация статуса всех устройств в топик status/ble
-func (p *Publisher) publishBleStatus() error {
+// Устройства сортируются в порядке, определённом в config.json (KnownDevicesOrder).
+// Возвращает true если был опубликован новый статус, false если ничего не изменилось.
+func (p *Publisher) publishBleStatus() (bool, error) {
 	base := p.config.MQTTPrefix
 	topic := fmt.Sprintf("%s/status/ble", base)
 
 	var status types.BleStatus
 	status.Devices = make([]types.BleStatusDevice, 0)
 
-	// Если only_known_devices=true — публикуем все известные устройства
-	if p.config.OnlyKnownDevices {
-		for mac, knownDevice := range p.config.KnownDevices {
-			device, exists := p.devices[mac]
-
-			statusDevice := types.BleStatusDevice{
-				Active:    exists && device.IsOnline(),
-				Cloud:     knownDevice.HOMEdCloud,
-				Discovery: knownDevice.HOMEdDiscovery,
-				ID:        mac,
-				Name:      knownDevice.Name,
-				Real:      true,
-			}
-
-			// Получаем expose для устройства
-			if exists {
-				homedExpose := device.GetHomedExpose()
-				statusDevice.Exposes = homedExpose.Common.Items
-				statusDevice.Options = homedExpose.Common.Options
-			}
-
-			status.Devices = append(status.Devices, statusDevice)
-		}
-	} else {
-	// Иначе публикуем только обнаруженные устройства которые есть в KnownDevices
-	// Публикуем в том же порядке что и в конфиге
+	// Используем KnownDevicesOrder для сохранения порядка из config.json
 	for _, mac := range p.config.KnownDevicesOrder {
-		device, exists := p.devices[mac]
+		knownDevice, exists := p.config.KnownDevices[mac]
 		if !exists {
-			continue // Устройство не найдено в активных
+			continue // На случай если порядок рассинхронизирован с картой
 		}
 
-		// Добавляем в статус только устройства с полезными данными
-		hasUsefulData := false
-		
-		parsedValues := device.GetParsedValues()
-		for key := range parsedValues {
-			switch key {
-			case "temp", "humidity", "battery", "pressure", "illuminance":
-				hasUsefulData = true
-				break
-			}
-		}
-
-		if !hasUsefulData {
-			continue
-		}
-
-		knownDevice, isKnown := p.config.KnownDevices[mac]
+		device, deviceExists := p.devices[mac]
 
 		statusDevice := types.BleStatusDevice{
-				Active:    device.IsOnline(),
-				Cloud:     isKnown && knownDevice.HOMEdCloud,
-				Discovery: isKnown && knownDevice.HOMEdDiscovery,
-				ID:        mac,
-				Name:      p.config.GetDeviceTopicName(mac),
-				Real:      true,
-			}
+			Active:    deviceExists && device.IsOnline(),
+			Cloud:     knownDevice.HOMEdCloud,
+			Discovery: knownDevice.HOMEdDiscovery,
+			ID:        mac,
+			Name:      knownDevice.Name,
+			Real:      true,
+		}
 
+		// Получаем expose только для активных устройств
+		if deviceExists {
 			homedExpose := device.GetHomedExpose()
 			statusDevice.Exposes = homedExpose.Common.Items
 			statusDevice.Options = homedExpose.Common.Options
-
-			status.Devices = append(status.Devices, statusDevice)
 		}
+
+		status.Devices = append(status.Devices, statusDevice)
 	}
 
-	// Маршализуем и публикуем
+	// Сериализуем и считаем хэш
 	statusBytes, err := json.Marshal(status)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return p.client.PublishJSON(topic, statusBytes, p.config.Retain)
+	// Вычисляем хэш текущего состояния
+	currentHash := fmt.Sprintf("%x", md5.Sum(statusBytes))
+
+	// Если хэш не изменился, пропускаем публикацию
+	if currentHash == p.lastBleStatusHash {
+		return false, nil
+	}
+
+	// Публикуем только если изменилось
+	if err := p.client.PublishJSON(topic, statusBytes, p.config.Retain); err != nil {
+		return false, err
+	}
+
+	p.lastBleStatusHash = currentHash
+	p.logger.Info().
+		Int("device_count", len(status.Devices)).
+		Str("topic", topic).
+		Msg("BLE status published")
+
+	return true, nil
+}
+
+// PublishBleStatusIfChanged — публикация BLE статуса если произошли изменения
+// Вызывается при добавлении нового устройства или изменении статуса
+func (p *Publisher) PublishBleStatusIfChanged() {
+	published, err := p.publishBleStatus()
+	if err != nil {
+		p.logger.Error().Err(err).Msg("Failed to publish BLE status")
+	} else if published {
+		p.logger.Debug().Msg("BLE status was updated and published")
+	}
 }
 
 // PublishHistoryValue — публикация исторического значения
@@ -364,17 +371,16 @@ func (p *Publisher) PublishCommandResponse(mac, service, char string, data []byt
 	return p.client.Publish(topic, data, false)
 }
 
-
 // publishDeviceStatus — публикация статуса устройства (online/offline)
 func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time.Time) error {
 	topicName := p.config.GetDeviceTopicName(mac)
 	topic := fmt.Sprintf("%s/device/ble/%s", p.config.MQTTPrefix, topicName)
-	
+
 	payload := map[string]interface{}{
 		"lastSeen": lastSeen.Unix(),
 		"status":   status,
 	}
-	
+
 	payloadBytes, _ := json.Marshal(payload)
 	return p.client.PublishJSON(topic, payloadBytes, p.config.Retain)
 }
