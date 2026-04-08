@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,13 +70,27 @@ func (p *Publisher) GetOrCreateDevice(mac string) *types.Device {
 	return device
 }
 
-// GetDevice — получение устройства
-func (p *Publisher) GetDevice(mac string) (*types.Device, bool) {
+// GetDevice — получение устройства (поддерживает как MAC так и настроенное имя)
+func (p *Publisher) GetDevice(identifier string) (*types.Device, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	normalizedMAC := types.NormalizeMACForTopic(mac)
-	device, exists := p.devices[normalizedMAC]
-	return device, exists
+	
+	// Сначала пробуем как MAC
+	normalizedMAC := types.NormalizeMACForTopic(identifier)
+	if device, exists := p.devices[normalizedMAC]; exists {
+		return device, exists
+	}
+
+	// Если не найдено - ищем по настроенному имени
+	for mac, knownDevice := range p.config.KnownDevices {
+		if knownDevice.Name != "" && strings.EqualFold(knownDevice.Name, identifier) {
+			if device, exists := p.devices[mac]; exists {
+				return device, exists
+			}
+		}
+	}
+
+	return nil, false
 }
 
 // GetAllDevices — получение всех устройств
@@ -87,6 +102,11 @@ func (p *Publisher) GetAllDevices() map[string]*types.Device {
 		result[k] = v
 	}
 	return result
+}
+
+// Config — получить конфигурацию
+func (p *Publisher) Config() *types.Config {
+	return p.config
 }
 
 // IsDeviceNew — проверка, является ли устройство недавно добавленным

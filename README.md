@@ -1,51 +1,87 @@
 # ble2homed - BLE to MQTT Bridge
 
-Полноценный BLE to MQTT мост с интеграцией в HOMEd.
+Полноценный BLE мост для интеграции Bluetooth Low Energy устройств в экосистему HOMEd.
 
-## Особенности
+Сканирует эфир, парсит рекламные пакеты, поддерживает чтение/запись характеристик, хранит историю значений и публикует все данные в MQTT по стандарту HOMEd.
 
-- **Непрерывное сканирование BLE** устройств
-- **Публикация в HOMEd стиле**:
-  - `device/{mac}` — информация об устройстве (last_seen, online, name)
-  - `expose/{mac}` — JSON со списком сенсоров (retain)
-  - `fd/{mac}` — плоский JSON с текущими значениями (retain)
-  - `fd/{mac}/{field}` — отдельные топики для recorder
-  - `td/{mac}/...` — команды (write, read, notify, ping)
-- **История значений** — кольцевые буферы с расчётом средних за 1m/10m/1h/24h/7d
-- **Парсинг BLE advertising**:
-  - Espruino/Puck.js (company 0x0590 → JSON5)
-  - Eddystone (URL, TLM)
-  - iBeacon
-  - Известные GATT сервисы (1809=temp, 180F=battery, 181A=humidity)
-- **Обработка команд** через MQTT (write, read, notify, ping)
-- **Веб-интерфейс** для мониторинга (опционально)
-- **Конфигурация** через YAML или JSON
-- **Graceful shutdown**
 
-## Установка
+## ✅ Основные возможности
 
+- Непрерывное фоновое сканирование BLE устройств
+- Полная совместимость с протоколом HOMEd
+- Автоматическое обнаружение устройств в веб интерфейсе HOMEd
+- Парсинг рекламных данных без подключения
+- Поддержка чтения, записи и подписки на уведомления GATT характеристик
+- Встроенная история значений с расчётом средних за 1м/10м/1ч/24ч/7д
+- Отдельные топики для каждого сенсора (совместимо с recorder)
+- Опциональный веб интерфейс для мониторинга
+- Поддержка конфигурации в форматах YAML и JSON
+- Низкое потребление ресурсов
+
+## 🚀 Быстрый старт
+
+### Установка
+
+Скомпилировать из исходников:
 ```bash
+git clone https://github.com/avaksru/ble2homed.git
+cd ble2homed
 go build -o ble2homed ./cmd/ble2homed/
 ```
 
-## Запуск
+Или скачать готовый бинарник со страницы [релизов](https://github.com/avaksru/ble2homed/releases).
+
+### Настройка прав в Linux
+
+Для доступа к BLE адаптеру без прав root:
+```bash
+sudo setcap 'cap_net_raw,cap_net_admin+eip' ble2homed
+```
+
+### Запуск
 
 ```bash
-# С конфигом по умолчанию (ищет config.yaml в текущей директории)
+# С конфигом по умолчанию
 ./ble2homed
 
-# С указанием конфига
-./ble2homed -config configs/config.yaml
+# С указанием пути к конфигу
+./ble2homed -config /etc/ble2homed/config.yaml
 
 # Показать версию
 ./ble2homed -version
 ```
 
-## Конфигурация
+### Установка как системный сервис systemd
 
-Файлы конфигурации: `config.yaml` или `config.json`
+Создайте файл `/etc/systemd/system/ble2homed.service`:
+```ini
+[Unit]
+Description=BLE to HOMEd Bridge
+After=network.target
 
-### Пример config.yaml
+[Service]
+WorkingDirectory=/opt/ble2homed
+ExecStart=/opt/ble2homed/ble2homed -config /etc/ble2homed/config.json
+Restart=always
+RestartSec=10
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Включите и запустите сервис:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ble2homed
+```
+
+## ⚙️ Конфигурация
+
+Файл конфигурации может быть в формате YAML или JSON.
+
+### Пример конфигурации config.yaml
 
 ```yaml
 mqtt:
@@ -58,8 +94,8 @@ mqtt:
 ble:
   adapter: "hci0"
   scan_timeout: "0s"  # 0 = непрерывное сканирование
-  filter_macs: []     # пустой = все устройства
-  connect: false      # подключаться для GATT операций
+  filter_macs: []     # пустой список = принимать все устройства
+  connect: false      # автоматически подключаться для GATT операций
 
 publish:
   base_prefix: "/ble"
@@ -77,100 +113,68 @@ log:
   level: "info"       # debug | info | warn | error
 ```
 
-## MQTT Топики (HOMEd стиль)
+## 📡 MQTT Топики (стандарт HOMEd)
+
+Все топики начинаются с префикса указанного в `base_prefix` (по умолчанию `/ble`).
 
 ### Основные топики
 
-```
-{base}/device/{mac}                 → {"last_seen": unix, "online": true, "name": "..."} (retain)
-{base}/expose/{mac}                 → JSON со списком сенсоров (retain)
-{base}/fd/{mac}                     → плоский JSON: {"temp":22.4, "battery":87, "rssi":-67}
-{base}/fd/{mac}/temp                → 22.4 (отдельные топики для recorder)
-{base}/fd/{mac}/battery             → 87
-{base}/fd/{mac}/rssi                → -67
-```
+| Топик                            | Описание                                      | Retain |
+|----------------------------------|-----------------------------------------------|--------|
+| `{base}/device/{mac}`            | Статус устройства: last_seen, online, name    | ✅      |
+| `{base}/expose/{mac}`            | Описание сенсоров для автоматического обнаружения | ✅ |
+| `{base}/fd/{mac}`                | Все значения одним JSON объектом              | ✅      |
 
-### Команды
 
-```
-{base}/td/{mac}/write/{service}/{char}   → запись в характеристику
-{base}/td/{mac}/read/{service}/{char}    → чтение характеристики
-{base}/td/{mac}/notify/{service}/{char}  → подписка на уведомления
-{base}/td/{mac}/ping                     → ping устройства
-```
 
-### История
+### История значений
 
-```
-{base}/hist/{interval}/{mac}/{field}   → среднее за период
-{base}/hist/request                    → запрос на пересчёт (опционально)
-```
+| Топик                            | Описание                                      |
+|----------------------------------|-----------------------------------------------|
+| `{base}/hist/{interval}/{mac}/{field}` | Среднее значение за период |
 
-## Команды
 
-### Запись в характеристику
+## 🛠️ Поддерживаемые устройства и протоколы
 
-```bash
-# Отправить hex данные
-mosquitto_pub -t "/ble/td/aa:bb:cc:dd:ee:ff/write/1809/2A6E" -m "0x1600"
+✅ Автоматически парсит:
+- Espruino / Puck.js (Company ID 0x0590, JSON5 формат)
+- Eddystone (URL, TLM телеметрия)
+- iBeacon
+- Стандартные GATT сервисы:
+  - `0x1809` Температура
+  - `0x180F` Уровень батареи
+  - `0x181A` Влажность
+  - `0x2A6E` Температура Цельсия
+  - `0x2A6F` Влажность
+  - `0x2A19` Уровень заряда батареи
 
-# Отправить строку
-mosquitto_pub -t "/ble/td/aa:bb:cc:dd:ee:ff/write/1809/2A6E" -m "22.4"
-```
+## ❗ Устранение неполадок
 
-### Чтение характеристики
+| Проблема | Решение |
+|----------|---------|
+| Ошибка `no BLE adapters found` | Убедитесь что bluetooth включён: `sudo hciconfig hci0 up` |
+| Ошибка доступа к адаптеру | Установите права capabilities: `sudo setcap 'cap_net_raw,cap_net_admin+eip' ble2homed` |
+| Устройства не найдены | Проверьте что адаптер работает: `sudo hcitool lescan` |
+| Не подключается к MQTT | Проверьте адрес брокера, логин и пароль, доступность порта 1883 |
+| Низкая скорость сканирования | Установите `scan_timeout: "3s"` в конфигурации |
 
-```bash
-mosquitto_pub -t "/ble/td/aa:bb:cc:dd:ee:ff/read/1809/2A6E" -m ""
-```
 
-### Подписка на уведомления
+## 📋 Требования
 
-```bash
-mosquitto_pub -t "/ble/td/aa:bb:cc:dd:ee:ff/notify/1809/2A6E" -m "1"
-mosquitto_pub -t "/ble/td/aa:bb:cc:dd:ee:ff/notify/1809/2A6E" -m "0"
-```
+- Go 1.22+ (для компиляции)
+- Linux с Bluetooth адаптером версии 4.0+
+- MQTT брокер (Mosquitto, EMQX, Vernemq и др.)
+- HOMEd 3.0+ (для полной интеграции)
 
-### Ping
+⚠️ **Важно:** Мост работает только на Linux. Поддержка Windows и macOS не реализована.
 
-```bash
-mosquitto_pub -t "/ble/td/aa:bb:cc:dd:ee:ff/ping" -m ""
-```
-
-## Структура проекта
-
-```
-cmd/
-  ble2homed/
-    main.go              # Точка входа
-internal/
-  config/               # Загрузка config.yaml/config.json
-  ble/                  # BLE сканер (go-ble/ble)
-  mqtt/                 # MQTT клиент, publisher, subscriber
-  discovery/            # Discovery (availability)
-  parser/               # Парсинг BLE advertising данных
-  history/              # Кольцевые буферы, расчёт средних
-  web/                  # Веб-сервер (опционально)
-pkg/
-  types/                # Общие типы (Device, Advertisement, ParsedValue)
-configs/
-  config.yaml           # Пример конфига в YAML
-  config.json           # Пример конфига в JSON
-```
-
-## Требования
-
-- Go 1.22+
-- Linux с BLE адаптером (поддерживается через go-ble/ble/linux)
-- MQTT брокер (Mosquitto, EMQX и др.)
-
-## Зависимости
+## 📦 Зависимости
 
 - `github.com/go-ble/ble` — BLE стек для Linux
 - `github.com/eclipse/paho.mqtt.golang` — MQTT клиент
-- `github.com/rs/zerolog` — структурированное логирование
-- `gopkg.in/yaml.v3` — YAML парсер
+- `github.com/rs/zerolog` — Структурированное логирование
+- `gopkg.in/yaml.v3` — Парсер YAML
 
-## Лицензия
+## 📄 Лицензия
 
 MIT

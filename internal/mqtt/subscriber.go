@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -96,14 +97,52 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 			return
 		}
 
+		// Обработка команд из топика /command/ble
+		if topic == fmt.Sprintf("%s/command/ble", s.base) {
+			var cmd struct {
+				Action string `json:"action"`
+				Device string `json:"device"`
+			}
+
+			if err := json.Unmarshal(payload, &cmd); err == nil {
+				if cmd.Action == "getProperties" && cmd.Device != "" {
+					s.logger.Info().Str("device", cmd.Device).Msg("Received getProperties command")
+
+					// Ищем устройство (поддерживаем как MAC так и имя)
+					device, exists := s.publisher.GetDevice(cmd.Device)
+					if !exists {
+						s.logger.Warn().Str("device", cmd.Device).Msg("Device not found for getProperties request")
+						return
+					}
+
+					// Получаем плоский формат данных устройства
+					fdData := device.GetFDFlat()
+					fdBytes, err := json.Marshal(fdData)
+					if err != nil {
+						s.logger.Error().Err(err).Str("device", cmd.Device).Msg("Failed to marshal device properties")
+						return
+					}
+
+					// Публикуем в топик fd/{device}
+					topicName := s.publisher.Config().GetDeviceTopicName(device.MAC)
+					fdTopic := fmt.Sprintf("%s/fd/%s", s.publisher.Config().Publish.BasePrefix, topicName)
+
+					if err := s.client.PublishJSON(fdTopic, fdBytes, false); err != nil {
+						s.logger.Error().Err(err).Str("topic", fdTopic).Msg("Failed to publish device properties")
+					} else {
+						s.logger.Debug().Str("topic", fdTopic).Msg("Device properties published successfully")
+					}
+
+					return
+				}
+			}
+		}
+
 		s.logger.Warn().Str("topic", topic).Msg("Unknown command topic format")
 	}
 
 	topics := map[string]byte{
-		fmt.Sprintf("%s/td/+/write/+/+", s.base):  1,
-		fmt.Sprintf("%s/td/+/read/+/+", s.base):   1,
-		fmt.Sprintf("%s/td/+/notify/+/+", s.base): 1,
-		fmt.Sprintf("%s/td/+/ping", s.base):       1,
+		fmt.Sprintf("%s/command/ble", s.base):  1,		
 	}
 
 	if err := s.client.SubscribeMultiple(topics, messageHandler); err != nil {

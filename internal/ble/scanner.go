@@ -2,6 +2,7 @@ package ble
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -90,18 +91,56 @@ func (s *Scanner) Start(ctx context.Context) error {
 // Stop — остановка сканирования
 func (s *Scanner) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
 
+	s.logger.Info().Msg("Stopping BLE scanner...")
+
+	// Сначала отменяем контекст чтобы остановить все циклы
 	if s.cancel != nil {
 		s.cancel()
 	}
 
 	s.running = false
-	s.logger.Info().Msg("BLE scanner stopped")
+	s.mu.Unlock()
+
+	// Даем небольшую паузу чтобы цикл сканирования успел выйти
+	time.Sleep(50 * time.Millisecond)
+
+	// Теперь останавливаем сканирование на адаптере
+	s.mu.Lock()
+	if err := s.adapter.StopScan(); err != nil {
+		// Идемпотентный вызов - игнорируем ошибку что сканирование уже остановлено
+		if !strings.Contains(err.Error(), "there is no scan in progress") {
+			s.logger.Warn().Err(err).Msg("Failed to stop scan on adapter")
+		}
+	}
+	s.mu.Unlock()
+
+	// Ждем с таймаутом полной остановки всех операций
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+waitLoop:
+	for {
+		select {
+		case <-timeout:
+			s.logger.Warn().Msg("Timeout waiting for scanner stop")
+			break waitLoop
+		case <-ticker.C:
+			s.mu.RLock()
+			if !s.running {
+				s.mu.RUnlock()
+				break waitLoop
+			}
+			s.mu.RUnlock()
+		}
+	}
+
+	s.logger.Info().Msg("✅ BLE scanner stopped completely, bluetoothd resources released")
 }
 
 // scanLoop — основной цикл сканирования
@@ -113,6 +152,12 @@ func (s *Scanner) scanLoop(ctx context.Context) {
 			return
 		default:
 			if err := s.doScan(ctx); err != nil {
+				// Игнорируем ошибку отмены контекста - это нормальный сценарий остановки
+				if errors.Is(err, context.Canceled) {
+					s.logger.Debug().Msg("Scan stopped gracefully")
+					return
+				}
+				
 				s.logger.Error().Err(err).Msg("Scan error, retrying in 5 seconds")
 				select {
 				case <-ctx.Done():
