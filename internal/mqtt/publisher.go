@@ -206,7 +206,7 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 		// fd/{name_or_mac} — текущие значения как плоский JSON
 		fdFlat := device.GetFDFlat()
 		fdBytes, _ := json.Marshal(fdFlat)
-		if err := p.client.PublishJSON(fmt.Sprintf("%s/fd/%s", base, topicName), fdBytes, false); err != nil {
+		if err := p.client.PublishJSON(fmt.Sprintf("%s/fd/ble/%s", base, topicName), fdBytes, false); err != nil {
 			return err
 		}
 	}
