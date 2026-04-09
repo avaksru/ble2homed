@@ -153,11 +153,16 @@ fi
 echo "📋 Копируем конфигурацию..."
 mkdir -p /etc/homed
 if [ ! -f "$CONF_DEST" ]; then
-    if [ -f "$TEMP_DIR/config.yaml" ]; then
+    if [ -f "$TEMP_DIR/homed-ble.conf" ]; then
+        cp "$TEMP_DIR/homed-ble.conf" "$CONF_DEST"
+        echo "✅ Конфигурация установлена в $CONF_DEST"
+    elif [ -f "$TEMP_DIR/config.yaml" ]; then
         cp "$TEMP_DIR/config.yaml" "$CONF_DEST"
         echo "✅ Конфигурация установлена в $CONF_DEST"
     else
         echo "⚠️  Файл конфигурации не найден в архиве"
+        echo "📝 Содержимое распакованного архива:"
+        ls -la "$TEMP_DIR/"
     fi
 else
     echo "ℹ️  Конфигурация уже существует, не перезаписываем"
