@@ -291,6 +291,8 @@ jobs:
 
           # Собираем все tar.gz файлы из артефактов
           find artifacts -name "*.tar.gz" -exec cp {} release-files/ \;
+          # Добавляем конфигурационный файл
+          cp configs/homed-ble.conf release-files/
 
           echo "::group::Release files"
           ls -lh release-files/

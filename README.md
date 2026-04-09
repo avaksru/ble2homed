@@ -61,7 +61,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=/opt/ble2homed
-ExecStart=/opt/ble2homed/ble2homed -config /etc/ble2homed/config.json
+	ExecStart=/opt/ble2homed/ble2homed -config /etc/ble2homed/homed-ble.conf
 Restart=always
 RestartSec=10
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW

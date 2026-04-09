@@ -66,7 +66,7 @@ func LoadConfig(path string) (*types.Config, error) {
 
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".yaml", ".yml":
+	case ".yaml", ".yml", ".conf":
 		if err := yaml.Unmarshal(data, config); err != nil {
 			return nil, fmt.Errorf("failed to parse YAML config: %w", err)
 		}
@@ -75,7 +75,7 @@ func LoadConfig(path string) (*types.Config, error) {
 			return nil, fmt.Errorf("failed to parse JSON config: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("unsupported config format: %s (use .yaml, .yml, or .json)", ext)
+		return nil, fmt.Errorf("unsupported config format: %s (use .yaml, .yml, .conf, or .json)", ext)
 	}
 
 	// Валидация конфигурации
@@ -130,12 +130,15 @@ func findConfigFile() string {
 	// Порядок поиска: config.yaml, config.yml, config.json
 	// В текущей директории и в ./configs/
 	candidates := []string{
+		"homed-ble.conf",
 		"config.yaml",
 		"config.yml",
 		"config.json",
+		"configs/homed-ble.conf",
 		"configs/config.yaml",
 		"configs/config.yml",
 		"configs/config.json",
+		"/etc/ble2homed/homed-ble.conf",
 		"/etc/ble2homed/config.yaml",
 		"/etc/ble2homed/config.json",
 	}
@@ -203,7 +206,7 @@ func SaveConfig(config *types.Config, path string) error {
 
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".yaml", ".yml":
+	case ".yaml", ".yml", ".conf":
 		data, err = yaml.Marshal(config)
 		if err != nil {
 			return fmt.Errorf("failed to marshal YAML: %w", err)
