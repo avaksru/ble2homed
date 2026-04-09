@@ -125,7 +125,7 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 
 					// Публикуем в топик fd/{device}
 					topicName := s.publisher.Config().GetDeviceTopicName(device.MAC)
-					fdTopic := fmt.Sprintf("%s/fd/%s", s.publisher.Config().Publish.BasePrefix, topicName)
+					fdTopic := fmt.Sprintf("%s/fd/ble/%s", s.publisher.Config().Publish.BasePrefix, topicName)
 
 					if err := s.client.PublishJSON(fdTopic, fdBytes, false); err != nil {
 						s.logger.Error().Err(err).Str("topic", fdTopic).Msg("Failed to publish device properties")
