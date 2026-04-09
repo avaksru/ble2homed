@@ -126,12 +126,26 @@ tar -xzf "$TEMP_DIR/archive.tar.gz" -C "$TEMP_DIR"
 
 # 7. Копируем бинарный файл
 echo "📋 Копируем исполняемый файл..."
-if [ -f "$TEMP_DIR/ble2homed" ]; then
-    cp -f "$TEMP_DIR/ble2homed" "$BIN_DEST_LINUX"
+BINARY_NAME=""
+EXPECTED_NAME="ble2homed-linux-$BIN_ARCH"
+
+if [ -f "$TEMP_DIR/$EXPECTED_NAME" ]; then
+    BINARY_NAME="$EXPECTED_NAME"
+elif [ -f "$TEMP_DIR/ble2homed" ]; then
+    BINARY_NAME="ble2homed"
+elif [ -f "$TEMP_DIR/homed-ble" ]; then
+    BINARY_NAME="homed-ble"
+fi
+
+if [ -n "$BINARY_NAME" ]; then
+    cp -f "$TEMP_DIR/$BINARY_NAME" "$BIN_DEST_LINUX"
     chmod +x "$BIN_DEST_LINUX"
     echo "✅ Бинарный файл установлен в $BIN_DEST_LINUX"
 else
     echo "❌ Бинарный файл не найден в архиве"
+    echo "📝 Содержимое архива:"
+    ls -la "$TEMP_DIR/"
+    rm -rf "$TEMP_DIR"
     exit 1
 fi
 

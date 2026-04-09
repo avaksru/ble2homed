@@ -224,10 +224,14 @@ jobs:
       - name: Compress artifacts
         run: |
           cd "${{ github.workspace }}"
-          BINARY="${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
+          BINARY_ORIG="${{ env.BINARY_NAME }}-${{ matrix.artifact_suffix }}"
+          BINARY_TARGET="homed-ble"
+          
+          # Переименовываем бинарник перед упаковкой
+          mv "${BINARY_ORIG}" "${BINARY_TARGET}"
 
-          # Создаём tar.gz архив только с бинарником
-          tar czf "${BINARY}.tar.gz" "${BINARY}"
+          # Создаём tar.gz архив с правильным именем файла внутри
+          tar czf "${BINARY_ORIG}.tar.gz" "${BINARY_TARGET}"
 
           echo "::group::Archive info"
           ls -lh "${BINARY}.tar.gz"
