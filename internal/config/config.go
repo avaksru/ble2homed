@@ -130,6 +130,7 @@ func findConfigFile() string {
 	// Порядок поиска: config.yaml, config.yml, config.json
 	// В текущей директории и в ./configs/
 	candidates := []string{
+		"/etc/homed/homed-ble.conf",
 		"homed-ble.conf",
 		"config.yaml",
 		"config.yml",

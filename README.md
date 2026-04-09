@@ -22,6 +22,12 @@
 
 ### Установка
 
+✅ Автоматическая установка одной командой (Linux / OpenWrt):
+
+```bash
+curl -s https://raw.githubusercontent.com/avaksru/ble2homed/master/install.sh | sudo sh
+```
+
 Скомпилировать из исходников:
 ```bash
 git clone https://github.com/avaksru/ble2homed.git
