@@ -234,7 +234,7 @@ jobs:
           tar czf "${BINARY_ORIG}.tar.gz" "${BINARY_TARGET}"
 
           echo "::group::Archive info"
-          ls -lh "${BINARY}.tar.gz"
+          ls -lh "${BINARY_ORIG}.tar.gz"
           echo "::endgroup::"
 
       - name: Upload artifact
