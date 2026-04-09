@@ -274,7 +274,7 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 	base := p.config.MQTTPrefix
 	topicName := p.config.GetDeviceTopicName(mac)
 
-	topic := fmt.Sprintf("%s/status/ble/%s", base, topicName)
+	topic := fmt.Sprintf("%s/device/ble/%s", base, topicName)
 
 	payload := map[string]interface{}{
 		"lastSeen": device.GetLastSeen().Unix(),
@@ -338,7 +338,7 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 	}
 
 	// Публикуем только если изменилось
-	if err := p.client.PublishJSON(topic, statusBytes, p.config.Retain); err != nil {
+	if err := p.client.PublishJSON(topic, statusBytes, true); err != nil {
 		return false, err
 	}
 
@@ -394,7 +394,7 @@ func (p *Publisher) PublishCommandResponse(mac, service, char string, data []byt
 // publishDeviceStatus — публикация статуса устройства (online/offline)
 func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time.Time) error {
 	topicName := p.config.GetDeviceTopicName(mac)
-	topic := fmt.Sprintf("%s/status/ble/%s", p.config.MQTTPrefix, topicName)
+	topic := fmt.Sprintf("%s/device/ble/%s", p.config.MQTTPrefix, topicName)
 
 	payload := map[string]interface{}{
 		"lastSeen": lastSeen.Unix(),
