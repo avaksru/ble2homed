@@ -2,7 +2,7 @@
 set -e
 
 # Скрипт установки homed-ble для Linux и OpenWrt
-# Версия: 1.0
+# Версия: 1.1
 
 APP_NAME="homed-ble"
 REPO="avaksru/ble2homed"
@@ -13,6 +13,26 @@ SYSTEMD_SERVICE="/etc/systemd/system/$APP_NAME.service"
 OPENWRT_INIT="/etc/init.d/$APP_NAME"
 
 echo "🚀 Начинаем установку $APP_NAME"
+
+# Проверка необходимых утилит
+if ! command -v curl >/dev/null 2>&1; then
+    echo "❌ Утилита curl не найдена"
+    if command -v opkg >/dev/null 2>&1; then
+        echo "💡 Установите командой:"
+        echo "   opkg update && opkg install curl ca-certificates"
+    fi
+    exit 1
+fi
+
+# Проверка что curl поддерживает HTTPS
+if ! curl --version | grep -q "https"; then
+    echo "❌ В вашем варианте curl отсутствует поддержка HTTPS"
+    if command -v opkg >/dev/null 2>&1; then
+        echo "💡 Установите полную версию:"
+        echo "   opkg update && opkg install curl ca-certificates"
+    fi
+    exit 1
+fi
 
 # 1. Останавливаем службу если существует
 echo "⏹️  Останавливаем существующую службу..."
@@ -30,10 +50,10 @@ fi
 
 # 2. Останавливаем все запущенные процессы
 echo "⏹️  Завершаем запущенные процессы $APP_NAME..."
-if pgrep -x "$APP_NAME" >/dev/null; then
+if pgrep "$APP_NAME" >/dev/null 2>&1 || ps | grep -v grep | grep "$APP_NAME" >/dev/null 2>&1; then
     killall $APP_NAME 2>/dev/null || true
     sleep 1
-    if pgrep -x "$APP_NAME" >/dev/null; then
+    if pgrep "$APP_NAME" >/dev/null 2>&1 || ps | grep -v grep | grep "$APP_NAME" >/dev/null 2>&1; then
         killall -9 $APP_NAME 2>/dev/null || true
     fi
     echo "✅ Все процессы завершены"
@@ -68,15 +88,22 @@ echo "✅ Обнаружена архитектура: $BIN_ARCH"
 
 # 4. Получаем последнюю версию релиза
 echo "🔍 Получаем последнюю версию..."
-LATEST_TAG=$(curl -s https://api.github.com/repos/$REPO/releases/latest | grep -o '"tag_name": ".*"' | cut -d'"' -f4)
+LATEST_TAG=$(curl -s -f "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name": ".*"' | cut -d'"' -f4)
+
+# Фоллбэк если API не работает
 if [ -z "$LATEST_TAG" ]; then
-    echo "❌ Не удалось получить последнюю версию"
-    exit 1
+    echo "⚠️  Не удалось получить последнюю версию через API, пробуем напрямую..."
+    LATEST_TAG="latest"
 fi
+
 echo "✅ Последняя версия: $LATEST_TAG"
 
 # 5. Скачиваем архив
-DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/ble2homed-linux-$BIN_ARCH.tar.gz"
+if [ "$LATEST_TAG" = "latest" ]; then
+    DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/ble2homed-linux-$BIN_ARCH.tar.gz"
+else
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/ble2homed-linux-$BIN_ARCH.tar.gz"
+fi
 echo "📥 Скачиваем $DOWNLOAD_URL"
 TEMP_DIR=$(mktemp -d)
 curl -L -o "$TEMP_DIR/archive.tar.gz" "$DOWNLOAD_URL"
