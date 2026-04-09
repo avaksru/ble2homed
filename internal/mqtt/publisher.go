@@ -255,7 +255,7 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	}
 
 	topic := fmt.Sprintf("%s/expose/ble/%s", base, topicName)
-	err = p.client.PublishJSON(topic, exposeBytes, p.config.Retain)
+	err = p.client.PublishJSON(topic, exposeBytes, true)
 
 	if err == nil {
 		// Устанавливаем флаг что опубликовали успешно
@@ -274,7 +274,7 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 	base := p.config.MQTTPrefix
 	topicName := p.config.GetDeviceTopicName(mac)
 
-	topic := fmt.Sprintf("%s/device/ble/%s", base, topicName)
+	topic := fmt.Sprintf("%s/status/ble/%s", base, topicName)
 
 	payload := map[string]interface{}{
 		"lastSeen": device.GetLastSeen().Unix(),
@@ -282,7 +282,7 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 	}
 
 	payloadBytes, _ := json.Marshal(payload)
-	return p.client.PublishJSON(topic, payloadBytes, p.config.Retain)
+	return p.client.PublishJSON(topic, payloadBytes, true)
 }
 
 // publishBleStatus — публикация статуса всех устройств в топик status/ble
@@ -394,7 +394,7 @@ func (p *Publisher) PublishCommandResponse(mac, service, char string, data []byt
 // publishDeviceStatus — публикация статуса устройства (online/offline)
 func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time.Time) error {
 	topicName := p.config.GetDeviceTopicName(mac)
-	topic := fmt.Sprintf("%s/device/ble/%s", p.config.MQTTPrefix, topicName)
+	topic := fmt.Sprintf("%s/status/ble/%s", p.config.MQTTPrefix, topicName)
 
 	payload := map[string]interface{}{
 		"lastSeen": lastSeen.Unix(),
@@ -402,7 +402,7 @@ func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time
 	}
 
 	payloadBytes, _ := json.Marshal(payload)
-	return p.client.PublishJSON(topic, payloadBytes, p.config.Retain)
+	return p.client.PublishJSON(topic, payloadBytes, true)
 }
 
 // CheckOfflineDevices — проверка устройств на offline по presence_timeout
