@@ -90,13 +90,13 @@ echo "✅ Обнаружена архитектура: $BIN_ARCH"
 echo "🔍 Получаем последнюю версию..."
 LATEST_TAG=$(curl -s -f "https://api.github.com/repos/$REPO/releases/latest" | grep -o '"tag_name": ".*"' | cut -d'"' -f4)
 
-# Фоллбэк если API не работает
+# Фоллбэк варианты
 if [ -z "$LATEST_TAG" ]; then
-    echo "⚠️  Не удалось получить последнюю версию через API, пробуем напрямую..."
-    LATEST_TAG="latest"
+    echo "⚠️  Пробуем версию nightly..."
+    LATEST_TAG="nightly"
 fi
 
-echo "✅ Последняя версия: $LATEST_TAG"
+echo "✅ Используем версию: $LATEST_TAG"
 
 # 5. Скачиваем архив
 if [ "$LATEST_TAG" = "latest" ]; then
@@ -106,11 +106,16 @@ else
 fi
 echo "📥 Скачиваем $DOWNLOAD_URL"
 TEMP_DIR=$(mktemp -d)
-curl -L -k -f -o "$TEMP_DIR/archive.tar.gz" "$DOWNLOAD_URL"
+curl -L -k -f -o "$TEMP_DIR/archive.tar.gz" "$DOWNLOAD_URL" 2>/dev/null
 
 # Проверяем что файл скачался нормально
-if [ ! -s "$TEMP_DIR/archive.tar.gz" ] || [ $(stat -c %s "$TEMP_DIR/archive.tar.gz" 2>/dev/null || stat -f %z "$TEMP_DIR/archive.tar.gz") -lt 1000000 ]; then
-    echo "❌ Не удалось скачать архив, файл поврежден или слишком маленький"
+FILESIZE=$(wc -c < "$TEMP_DIR/archive.tar.gz")
+if [ ! -s "$TEMP_DIR/archive.tar.gz" ] || [ $FILESIZE -lt 1000000 ]; then
+    echo "❌ Не удалось скачать архив"
+    echo "💡 Возможные причины:"
+    echo "   - В репозитории еще не создан релиз с бинарными файлами"
+    echo "   - Отсутствует интернет соединение"
+    echo "   - Ошибка доступа к GitHub"
     rm -rf "$TEMP_DIR"
     exit 1
 fi
