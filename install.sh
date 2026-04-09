@@ -106,7 +106,14 @@ else
 fi
 echo "📥 Скачиваем $DOWNLOAD_URL"
 TEMP_DIR=$(mktemp -d)
-curl -L -o "$TEMP_DIR/archive.tar.gz" "$DOWNLOAD_URL"
+curl -L -k -f -o "$TEMP_DIR/archive.tar.gz" "$DOWNLOAD_URL"
+
+# Проверяем что файл скачался нормально
+if [ ! -s "$TEMP_DIR/archive.tar.gz" ] || [ $(stat -c %s "$TEMP_DIR/archive.tar.gz" 2>/dev/null || stat -f %z "$TEMP_DIR/archive.tar.gz") -lt 1000000 ]; then
+    echo "❌ Не удалось скачать архив, файл поврежден или слишком маленький"
+    rm -rf "$TEMP_DIR"
+    exit 1
+fi
 
 # 6. Распаковываем
 echo "📦 Распаковываем архив..."
