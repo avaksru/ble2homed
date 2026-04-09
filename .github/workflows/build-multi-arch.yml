@@ -229,9 +229,12 @@ jobs:
           
           # Переименовываем бинарник перед упаковкой
           mv "${BINARY_ORIG}" "${BINARY_TARGET}"
+          
+          # Копируем конфиг
+          cp configs/homed-ble.conf ./
 
-          # Создаём tar.gz архив с правильным именем файла внутри
-          tar czf "${BINARY_ORIG}.tar.gz" "${BINARY_TARGET}"
+          # Создаём tar.gz архив с бинарником и конфигом
+          tar czf "${BINARY_ORIG}.tar.gz" "${BINARY_TARGET}" homed-ble.conf
 
           echo "::group::Archive info"
           ls -lh "${BINARY_ORIG}.tar.gz"
