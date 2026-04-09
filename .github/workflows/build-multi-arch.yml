@@ -141,7 +141,7 @@ jobs:
             {"goos":"linux","goarch":"amd64","artifact_suffix":"linux-amd64"},
             {"goos":"linux","goarch":"arm","goarm":"7","artifact_suffix":"linux-armv7"},
             {"goos":"linux","goarch":"arm64","artifact_suffix":"linux-arm64"},
-            {"goos":"linux","goarch":"arm64","goarm":"8","artifact_suffix":"linux-armv8"},
+            {"goos":"linux","goarch":"arm","goarm":"8","artifact_suffix":"linux-armv8"},
             {"goos":"linux","goarch":"riscv64","artifact_suffix":"linux-riscv64"},
             {"goos":"linux","goarch":"mips","artifact_suffix":"linux-mips"},
             {"goos":"linux","goarch":"mips64","artifact_suffix":"linux-mips64"},
