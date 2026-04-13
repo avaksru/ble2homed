@@ -27,6 +27,9 @@ const (
 
 	// ATC1441 company ID
 	CompanyATC = 0x0001
+
+	// BTHome service UUID
+	ServiceBTHome = "FCD2"
 )
 
 // ParseBLEData — полный парсинг BLE advertising данных
@@ -82,7 +85,6 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 				}
 			}
 		case strings.Contains(uuid, ServiceHumidity):
-
 			// Стандартный GATT влажность всегда 2 байта. Если больше - это ATC1441!
 			if len(sd.Data) == 2 {
 				if humidity, ok := parseHumidity(sd.Data); ok {
@@ -95,19 +97,10 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 					}
 				}
 			} else if len(sd.Data) >= 13 {
-				//* fmt.Printf ("%s DBG ✅ Это ATC1441! Вызываю парсер...\n",
-				//	time.Now().Format("3:04PM"))
 				// Это формат ATC1441!
 				parsed := parseATCServiceData(sd.Data, now)
-				//* fmt.Printf ("%s DBG Парсер вернул %d полей\n",
-				//	time.Now().Format("3:04PM"),
-				//	len(parsed))
 				for k, v := range parsed {
 					result[k] = v
-					//* fmt.Printf ("%s DBG Добавил поле: %s = %v\n",
-					//	time.Now().Format("3:04PM"),
-					//	k,
-					//	v.Value)
 				}
 			}
 		case strings.Contains(uuid, ServiceBattery):
@@ -120,6 +113,12 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 					Timestamp: now,
 				}
 			}
+		case strings.Contains(uuid, ServiceBTHome):
+			// BTHome v2 формат
+			parsed := parseBTHomeData(sd.Data, now)
+			for k, v := range parsed {
+				result[k] = v
+			}
 		default:
 			// Попытка распознать по UUID характеристики
 			parsed := parseServiceDataByUUID(uuid, sd.Data, now)
@@ -130,15 +129,8 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 
 		// Выводим лог только если удалось распарсить полезные значения
 		if len(result) > beforeCount {
-			//* fmt.Printf ("%s INF Результат парсинга service data mac=%s uuid=%s data=%s (размер: %d байт)\n",
-			//	time.Now().Format("3:04PM"),
-			//	strings.ToLower(adv.Addr),
-			//	uuid,
-			//	hex.EncodeToString(sd.Data),
-			//	len(sd.Data))
+			// Логирование при необходимости
 		}
-
-
 	}
 
 	// Попытка распознать Eddystone
@@ -155,6 +147,136 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 		}
 	}
 
+	return result
+}
+
+// parseBTHomeData — парсинг данных формата BTHome v2
+// Поддерживает:
+//   1. 14 байт: BTHome v2 (THB2 PVVX) без шифрования
+//   2. 11 байт: BTHome v2 (ATC PVVX) без шифрования
+func parseBTHomeData(data []byte, now time.Time) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue)
+
+	if len(data) < 11 {
+		return result
+	}
+
+	// BTHome v2 формат 14 байт (THB2 PVVX без шифрования)
+	if len(data) == 14 {
+		// Структура:
+		// байты 0-3: заголовок/флаги (пропускаем)
+		// байт 4: батарея (%)
+		// байты 5: резерв
+		// байты 6-7: температура (int16, сотые доли °C)
+		// байты 8-9: резерв
+		// байты 10-11: влажность (uint16, сотые доли %)
+		// байты 12-13: напряжение (int16, мВ)
+
+		battery := int(data[4])
+		
+		// Температура: little-endian int16 в сотых долях
+		tempRaw := int16(binary.LittleEndian.Uint16(data[6:8]))
+		temperature := float64(tempRaw) / 100.0
+		
+		// Влажность: little-endian uint16 в сотых долях
+		humidityRaw := binary.LittleEndian.Uint16(data[10:12])
+		humidity := float64(humidityRaw) / 100.0
+		
+		// Напряжение: little-endian int16 в мВ
+		voltageRaw := int16(binary.LittleEndian.Uint16(data[12:14]))
+		voltage := float64(voltageRaw) / 1000.0
+		
+		result["temp"] = types.ParsedValue{
+			Value:     temperature,
+			Unit:      "°C",
+			Type:      "temp",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["humidity"] = types.ParsedValue{
+			Value:     humidity,
+			Unit:      "%",
+			Type:      "humidity",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["battery"] = types.ParsedValue{
+			Value:     battery,
+			Unit:      "%",
+			Type:      "battery",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["voltage"] = types.ParsedValue{
+			Value:     voltage,
+			Unit:      "V",
+			Type:      "voltage",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["bthome_type"] = types.ParsedValue{
+			Value:     "BTHOMEv2 THB2 PVVX (No encryption)",
+			Type:      "bthome_type",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+	} else if len(data) == 11 {
+		// BTHome v2 формат 11 байт (ATC PVVX без шифрования)
+		// Структура:
+		// байты 0-3: заголовок/флаги (пропускаем)
+		// байт 4: батарея (%)
+		// байты 5: резерв
+		// байты 6-7: температура (int16, сотые доли °C)
+		// байты 8-9: влажность (uint16, сотые доли %)
+		// байт 10: резерв
+		
+		battery := int(data[4])
+		
+		// Температура: little-endian int16 в сотых долях
+		tempRaw := int16(binary.LittleEndian.Uint16(data[6:8]))
+		temperature := float64(tempRaw) / 100.0
+		
+		// Влажность: little-endian uint16 в сотых долях
+		humidityRaw := binary.LittleEndian.Uint16(data[8:10])
+		humidity := float64(humidityRaw) / 100.0
+		
+		result["temp"] = types.ParsedValue{
+			Value:     temperature,
+			Unit:      "°C",
+			Type:      "temp",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["humidity"] = types.ParsedValue{
+			Value:     humidity,
+			Unit:      "%",
+			Type:      "humidity",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["battery"] = types.ParsedValue{
+			Value:     battery,
+			Unit:      "%",
+			Type:      "battery",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+		
+		result["bthome_type"] = types.ParsedValue{
+			Value:     "BTHOMEv2 ATC PVVX (No encryption)",
+			Type:      "bthome_type",
+			Source:    "BTHome/v2",
+			Timestamp: now,
+		}
+	}
+	
 	return result
 }
 
@@ -284,6 +406,371 @@ func parseHumidity(data []byte) (float64, bool) {
 func parseBattery(data []byte) (int, bool) {
 	if len(data) < 1 {
 		return 0, false
+	}
+
+	return int(data[0]), true
+}
+
+// parseServiceDataByUUID — попытка распарсить service data по UUID характеристики
+func parseServiceDataByUUID(uuid string, data []byte, now time.Time) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue)
+
+	switch uuid {
+	case CharTemperature:
+		if temp, ok := parseTemperature(data); ok {
+			result["temp"] = types.ParsedValue{
+				Value:     temp,
+				Unit:      "°C",
+				Type:      "temp",
+				Source:    "gatt",
+				Timestamp: now,
+			}
+		}
+	case CharHumidity:
+		if humidity, ok := parseHumidity(data); ok {
+			result["humidity"] = types.ParsedValue{
+				Value:     humidity,
+				Unit:      "%",
+				Type:      "humidity",
+				Source:    "gatt",
+				Timestamp: now,
+			}
+		}
+	case CharPressure:
+		if len(data) >= 4 {
+			pressure := float64(binary.LittleEndian.Uint32(data[0:4])) / 10.0
+			result["pressure"] = types.ParsedValue{
+				Value:     pressure,
+				Unit:      "Pa",
+				Type:      "pressure",
+				Source:    "gatt",
+				Timestamp: now,
+			}
+		}
+	}
+
+	return result
+}
+
+// parseEddystone — парсинг Eddystone beacon данных
+func parseEddystone(adv types.Advertisement) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue)
+	now := time.Now()
+
+	// Eddystone использует service UUID 0xFEAA
+	for _, sd := range adv.ServiceData {
+		if !strings.EqualFold(sd.UUID, "FEAA") || len(sd.Data) < 2 {
+			continue
+		}
+
+		frameType := sd.Data[0]
+
+		switch frameType {
+		case 0x10: // Eddystone-URL
+			if len(sd.Data) > 1 {
+				txPower := int8(sd.Data[1])
+				result["eddystone_tx_power"] = types.ParsedValue{
+					Value:     txPower,
+					Unit:      "dBm",
+					Type:      "tx_power",
+					Source:    "eddystone",
+					Timestamp: now,
+				}
+
+				if url := decodeEddystoneURL(sd.Data[2:]); url != "" {
+					result["eddystone_url"] = types.ParsedValue{
+						Value:     url,
+						Type:      "url",
+						Source:    "eddystone",
+						Timestamp: now,
+					}
+				}
+			}
+		case 0x20: // Eddystone-TLM
+			if len(sd.Data) >= 14 {
+				// Температура (если есть)
+				tempRaw := binary.BigEndian.Uint16(sd.Data[2:4])
+				if tempRaw != 0x8000 { // 0x8000 = нет датчика
+					temp := int16(tempRaw)
+					result["eddystone_temp"] = types.ParsedValue{
+						Value:     float64(temp) / 256.0,
+						Unit:      "°C",
+						Type:      "temp",
+						Source:    "eddystone",
+						Timestamp: now,
+					}
+				}
+			}
+		}
+	}
+
+	return result
+}
+
+// decodeEddystoneURL — декодирование URL из Eddystone
+func decodeEddystoneURL(data []byte) string {
+	if len(data) < 1 {
+		return ""
+	}
+
+	// Схемы URL
+	schemes := []string{
+		"http://www.",
+		"https://www.",
+		"http://",
+		"https://",
+	}
+
+	// Расширения
+	extensions := []string{
+		".com/", ".org/", ".edu/", ".net/", ".info/", ".biz/", ".gov/",
+		".com", ".org", ".edu", ".net", ".info", ".biz", ".gov",
+	}
+
+	schemeIdx := int(data[0])
+	if schemeIdx >= len(schemes) {
+		return ""
+	}
+
+	url := schemes[schemeIdx]
+
+	for i := 1; i < len(data); i++ {
+		b := data[i]
+		if b < byte(len(extensions)) {
+			url += extensions[b]
+		} else {
+			url += string(b)
+		}
+	}
+
+	return url
+}
+
+// parseIBeacon — парсинг iBeacon данных
+func parseIBeacon(adv types.Advertisement) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue)
+	now := time.Now()
+
+	if len(adv.Manufacturer) < 25 {
+		return result
+	}
+
+	// Apple company ID = 0x004C
+	companyID := binary.LittleEndian.Uint16(adv.Manufacturer[0:2])
+	if companyID != 0x004C {
+		return result
+	}
+
+	// iBeacon type = 0x02, length = 0x15
+	if adv.Manufacturer[2] != 0x02 || adv.Manufacturer[3] != 0x15 {
+		return result
+	}
+
+	// UUID (16 bytes)
+	uuid := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(adv.Manufacturer[4:8]),
+		binary.BigEndian.Uint16(adv.Manufacturer[8:10]),
+		binary.BigEndian.Uint16(adv.Manufacturer[10:12]),
+		adv.Manufacturer[12:14],
+		adv.Manufacturer[14:20])
+
+	// Major, Minor
+	major := binary.BigEndian.Uint16(adv.Manufacturer[20:22])
+	minor := binary.BigEndian.Uint16(adv.Manufacturer[22:24])
+
+	// TX Power
+	txPower := int8(adv.Manufacturer[24])
+
+	result["ibeacon_uuid"] = types.ParsedValue{
+		Value:     uuid,
+		Type:      "uuid",
+		Source:    "ibeacon",
+		Timestamp: now,
+	}
+	result["ibeacon_major"] = types.ParsedValue{
+		Value:     int(major),
+		Type:      "major",
+		Source:    "ibeacon",
+		Timestamp: now,
+	}
+	result["ibeacon_minor"] = types.ParsedValue{
+		Value:     int(minor),
+		Type:      "minor",
+		Source:    "ibeacon",
+		Timestamp: now,
+	}
+	result["ibeacon_tx_power"] = types.ParsedValue{
+		Value:     txPower,
+		Unit:      "dBm",
+		Type:      "tx_power",
+		Source:    "ibeacon",
+		Timestamp: now,
+	}
+
+	return result
+}
+
+// parseServiceDataToJSON — преобразование service data в JSON-совместимый формат
+func parseServiceDataToJSON(data []byte) interface{} {
+	if len(data) == 0 {
+		return nil
+	}
+
+	// Если данные выглядят как текст, возвращаем как строку
+	if isPrintable(data) {
+		return string(data)
+	}
+
+	// Иначе возвращаем hex
+	return hex.EncodeToString(data)
+}
+
+// parseFloat — парсинг строки в float64
+func parseFloat(s string) (float64, bool) {
+	var f float64
+	_, err := fmt.Sscanf(s, "%f", &f)
+	if err != nil {
+		return 0, false
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
+}
+
+// isPrintable — проверка, что данные состоят из печатных символов
+func isPrintable(data []byte) bool {
+	for _, b := range data {
+		if b < 32 || b > 126 {
+			return false
+		}
+	}
+	return true
+}
+
+// ParseCommandPayload — парсинг payload команды
+// Поддерживает hex, строку, числа, JSON
+func ParseCommandPayload(payload string) ([]byte, error) {
+	payload = strings.TrimSpace(payload)
+
+	// Попытка парсинга как hex строки
+	if isHexString(payload) {
+		return hex.DecodeString(strings.TrimPrefix(payload, "0x"))
+	}
+
+	// Попытка парсинга как числа
+	if f, ok := parseFloat(payload); ok {
+		// Преобразуем в bytes в зависимости от типа
+		buf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(buf, math.Float32bits(float32(f)))
+		return buf, nil
+	}
+
+	// Как строка
+	return []byte(payload), nil
+}
+
+// isHexString — проверка, является ли строка hex
+func isHexString(s string) bool {
+	s = strings.TrimPrefix(s, "0x")
+	s = strings.TrimPrefix(s, "0X")
+	if len(s)%2 != 0 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// parseATCData — парсинг данных формата ATC1441 (псевдоним для обратной совместимости)
+func parseATCData(data []byte, now time.Time) map[string]types.ParsedValue {
+	return parseATCServiceData(data, now)
+}
+
+// parseATCServiceData — парсинг данных формата ATC1441
+// Поддерживает 3 формата:
+//  1. Стандартный ATC1441 13 байт: MAC(6) | Температура(2) | Влажность(1) | Батарея(1) | Напряжение(2) | Флаги(1)
+//  2. PVVX формат 15 байт: MAC(6) | Температура(2) | Влажность(2) | Батарея(1) | Напряжение(2) | Счетчик(1) | Флаги(1) | RSSI(1)
+//  3. BTHome v2 формат
+func parseATCServiceData(data []byte, now time.Time) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue)
+	
+	if len(data) < 13 {
+		return result
+	}
+
+	var tempRaw int16
+	var humidity float64
+	var battery int
+	var voltageRaw uint16
+
+	if len(data) == 13 {
+		// Стандартный ATC1441 формат (Big Endian)
+		tempRaw = int16(binary.BigEndian.Uint16(data[6:8]))
+		humidity = float64(data[8])
+		battery = int(data[9])
+		voltageRaw = binary.BigEndian.Uint16(data[10:12])
+		
+		// В ATC1441 температура в десятых долях градуса
+		temp := float64(tempRaw) / 10.0
+
+		result["temp"] = types.ParsedValue{
+			Value:     temp,
+			Unit:      "°C",
+			Type:      "temp",
+			Source:    "ATC1441",
+			Timestamp: now,
+		}
+
+	} else if len(data) >= 15 {
+		// PVVX / новый формат (Little Endian)
+		tempRaw = int16(binary.LittleEndian.Uint16(data[6:8]))
+		humidityRaw := binary.LittleEndian.Uint16(data[8:10])
+		voltageRaw = binary.LittleEndian.Uint16(data[10:12])
+		
+		// В PVVX температура в сотых долях, влажность в сотых долях %
+		temp := float64(tempRaw) / 100.0
+		humidity = float64(humidityRaw) / 100.0
+
+		// Батарея в PVVX находится в байте 12
+		battery = int(data[12])
+
+		result["temp"] = types.ParsedValue{
+			Value:     temp,
+			Unit:      "°C",
+			Type:      "temp",
+			Source:    "ATC1441/PVVX",
+			Timestamp: now,
+		}
+	}
+
+	// Общие поля для всех форматов
+	result["humidity"] = types.ParsedValue{
+		Value:     humidity,
+		Unit:      "%",
+		Type:      "humidity",
+		Source:    "ATC1441",
+		Timestamp: now,
+	}
+
+	result["battery"] = types.ParsedValue{
+		Value:     battery,
+		Unit:      "%",
+		Type:      "battery",
+		Source:    "ATC1441",
+		Timestamp: now,
+	}
+
+	voltage := float64(voltageRaw) / 1000.0
+	result["voltage"] = types.ParsedValue{
+		Value:     voltage,
+		Unit:      "V",
+		Type:      "voltage",
+		Source:    "ATC1441",
+		Timestamp: now,
+	}
+
+	return result
+}		return 0, false
 	}
 
 	return int(data[0]), true
