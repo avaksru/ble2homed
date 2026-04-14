@@ -239,7 +239,85 @@ func (p *Publisher) UpdateDevice(identifier string, data map[string]interface{})
 		p.config.KnownDevicesOrder = append(p.config.KnownDevicesOrder, mac)
 	}
 
-	return nil
+	return p.saveKnownDeviceToDatabase(device, knownDevice, data)
+}
+
+func (p *Publisher) saveKnownDeviceToDatabase(device *types.Device, knownDevice types.KnownDevice, data map[string]interface{}) error {
+	db, err := p.loadDeviceDatabase()
+	if err != nil {
+		return err
+	}
+
+	p.dbMu.Lock()
+	defer p.dbMu.Unlock()
+
+	normalizedID := types.NormalizeMACForTopic(device.MAC)
+	if normalizedID == "" {
+		normalizedID = device.MAC
+	}
+
+	name := device.Name
+	if name == "" {
+		name = normalizedID
+	}
+
+	exposes := device.GetHomedExpose().Common.Items
+	if parsed, ok := parseStringSlice(data["exposes"]); ok && len(parsed) > 0 {
+		exposes = parsed
+	}
+
+	real := false
+	if r, ok := data["real"].(bool); ok {
+		real = r
+	}
+
+	updated := false
+	for i, existing := range db.Devices {
+		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
+			db.Devices[i].Name = name
+			db.Devices[i].Active = device.IsOnline()
+			db.Devices[i].Cloud = knownDevice.HOMEdCloud
+			db.Devices[i].Discovery = knownDevice.HOMEdDiscovery
+			db.Devices[i].Real = real
+			db.Devices[i].Exposes = exposes
+			updated = true
+			break
+		}
+	}
+
+	if !updated {
+		db.Devices = append(db.Devices, dbDevice{
+			Active:    device.IsOnline(),
+			Cloud:     knownDevice.HOMEdCloud,
+			Discovery: knownDevice.HOMEdDiscovery,
+			Exposes:   exposes,
+			ID:        normalizedID,
+			Name:      name,
+			Real:      real,
+		})
+	}
+
+	db.Timestamp = time.Now().Unix()
+	db.Version = p.version
+
+	return p.saveDeviceDatabase(db)
+}
+
+func parseStringSlice(value interface{}) ([]string, bool) {
+	switch items := value.(type) {
+	case []string:
+		return items, true
+	case []interface{}:
+		result := make([]string, 0, len(items))
+		for _, item := range items {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result, true
+	default:
+		return nil, false
+	}
 }
 
 func containsString(list []string, value string) bool {
