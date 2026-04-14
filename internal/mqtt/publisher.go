@@ -4,6 +4,8 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,17 +22,25 @@ type Publisher struct {
 	devices             map[string]*types.Device
 	deviceCreatedTimes  map[string]time.Time // время создания каждого устройства
 	mu                  sync.RWMutex
+	dbMu                sync.Mutex
 	maxDevices          int    // максимальное количество устройств
+	version             string
+	permitJoin          bool
 	lastBleStatusHash   string // хэш последнего опубликованного status/ble
 	lastDeviceAddedTime time.Time
 }
 
 // NewPublisher — создание нового publisher
-func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger) *Publisher {
+func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger, version string) *Publisher {
 	maxDevices := 1000 // по умолчанию 1000 устройств
 	if config.MaxConnections > 0 {
 		maxDevices = config.MaxConnections
 	}
+
+	if config.DatabasePath == "" {
+		config.DatabasePath = "/opt/homed-ble/database.json"
+	}
+
 	return &Publisher{
 		client:             client,
 		config:             config,
@@ -38,6 +48,8 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger) *
 		devices:            make(map[string]*types.Device),
 		deviceCreatedTimes: make(map[string]time.Time),
 		maxDevices:         maxDevices,
+		version:            version,
+		permitJoin:         !config.OnlyKnownDevices,
 	}
 }
 
@@ -105,8 +117,188 @@ func (p *Publisher) GetAllDevices() map[string]*types.Device {
 }
 
 // Config — получить конфигурацию
+type deviceDatabase struct {
+	Devices   []dbDevice `json:"devices"`
+	Timestamp int64      `json:"timestamp"`
+	Version   string     `json:"version"`
+}
+
+type dbDevice struct {
+	Active    bool     `json:"active"`
+	Cloud     bool     `json:"cloud"`
+	Discovery bool     `json:"discovery"`
+	Exposes   []string `json:"exposes"`
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Real      bool     `json:"real"`
+}
+
 func (p *Publisher) Config() *types.Config {
 	return p.config
+}
+
+func (p *Publisher) IsPermitJoin() bool {
+	return p.permitJoin
+}
+
+func (p *Publisher) SetPermitJoin(enabled bool) error {
+	p.permitJoin = enabled
+	p.config.OnlyKnownDevices = !enabled
+
+	if !enabled {
+		if err := p.loadKnownDevicesFromDatabase(); err != nil {
+			p.logger.Warn().Err(err).Msg("Failed to load known devices from database")
+		}
+	}
+
+	return nil
+}
+
+func (p *Publisher) loadKnownDevicesFromDatabase() error {
+	db, err := p.loadDeviceDatabase()
+	if err != nil {
+		return err
+	}
+
+	if len(db.Devices) == 0 {
+		return nil
+	}
+
+	knownDevices := make(map[string]types.KnownDevice, len(db.Devices))
+	order := make([]string, 0, len(db.Devices))
+
+	for _, entry := range db.Devices {
+		id := types.NormalizeMACForTopic(entry.ID)
+		if id == "" {
+			continue
+		}
+
+		knownDevices[id] = types.KnownDevice{
+			Name:           entry.Name,
+			HOMEdCloud:     entry.Cloud,
+			HOMEdDiscovery: entry.Discovery,
+		}
+		order = append(order, id)
+	}
+
+	if len(knownDevices) == 0 {
+		return nil
+	}
+
+	p.config.KnownDevices = knownDevices
+	p.config.KnownDevicesOrder = order
+	return nil
+}
+
+func (p *Publisher) loadDeviceDatabase() (*deviceDatabase, error) {
+	path := filepath.FromSlash(p.config.DatabasePath)
+	if path == "" {
+		return &deviceDatabase{Devices: []dbDevice{}}, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &deviceDatabase{Devices: []dbDevice{}}, nil
+		}
+		return nil, err
+	}
+
+	var db deviceDatabase
+	if err := json.Unmarshal(data, &db); err != nil {
+		return nil, err
+	}
+
+	if db.Devices == nil {
+		db.Devices = []dbDevice{}
+	}
+
+	return &db, nil
+}
+
+func (p *Publisher) saveDeviceDatabase(db *deviceDatabase) error {
+	path := filepath.FromSlash(p.config.DatabasePath)
+	if path == "" {
+		return fmt.Errorf("database path is not configured")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	content, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(path, content, 0o644)
+}
+
+func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
+	parsedValues := device.GetParsedValues()
+	for key, val := range parsedValues {
+		switch key {
+		case "temp", "humidity", "battery", "pressure", "illuminance":
+			if val.Value != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *Publisher) updateDeviceDatabase(device *types.Device) error {
+	if !p.hasUsefulDeviceData(device) {
+		return nil
+	}
+
+	db, err := p.loadDeviceDatabase()
+	if err != nil {
+		return err
+	}
+
+	p.dbMu.Lock()
+	defer p.dbMu.Unlock()
+
+	normalizedID := types.NormalizeMACForTopic(device.MAC)
+	if normalizedID == "" {
+		normalizedID = device.MAC
+	}
+
+	name := device.Name
+	if name == "" {
+		name = normalizedID
+	}
+
+	exposes := device.GetHomedExpose().Common.Items
+
+	updated := false
+	for i, existing := range db.Devices {
+		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
+			db.Devices[i].Active = device.IsOnline()
+			db.Devices[i].Name = name
+			db.Devices[i].Exposes = exposes
+			updated = true
+			break
+		}
+	}
+
+	if !updated {
+		db.Devices = append(db.Devices, dbDevice{
+			Active:    device.IsOnline(),
+			Cloud:     false,
+			Discovery: false,
+			Exposes:   exposes,
+			ID:        normalizedID,
+			Name:      name,
+			Real:      false,
+		})
+	}
+
+	db.Timestamp = time.Now().Unix()
+	db.Version = p.version
+
+	return p.saveDeviceDatabase(db)
 }
 
 // IsDeviceNew — проверка, является ли устройство недавно добавленным
@@ -179,6 +371,12 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	// Публикуем expose для HOMEd
 	if err := p.publishExpose(mac, device); err != nil {
 		return err
+	}
+
+	if p.IsPermitJoin() {
+		if err := p.updateDeviceDatabase(device); err != nil {
+			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to save device into database")
+		}
 	}
 
 	return nil
@@ -294,6 +492,10 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 
 	var status types.BleStatus
 	status.Devices = make([]types.BleStatusDevice, 0)
+	status.Names = false
+	status.PermitJoin = p.permitJoin
+	status.Version = p.version
+	status.Timestamp = time.Now().Unix()
 
 	// Используем KnownDevicesOrder для сохранения порядка из config.json
 	for _, mac := range p.config.KnownDevicesOrder {
@@ -323,18 +525,33 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 		status.Devices = append(status.Devices, statusDevice)
 	}
 
-	// Сериализуем и считаем хэш
-	statusBytes, err := json.Marshal(status)
+	// Сериализуем и считаем хэш только по устройствам и состоянию PermitJoin,
+	// чтобы timestamp не ломал логику публикации при отсутствии изменений.
+	hashSource := struct {
+		Devices    []types.BleStatusDevice `json:"devices"`
+		PermitJoin bool                   `json:"permitJoin"`
+		Names      bool                   `json:"names"`
+	}{
+		Devices:    status.Devices,
+		PermitJoin: status.PermitJoin,
+		Names:      status.Names,
+	}
+	hashBytes, err := json.Marshal(hashSource)
 	if err != nil {
 		return false, err
 	}
 
 	// Вычисляем хэш текущего состояния
-	currentHash := fmt.Sprintf("%x", md5.Sum(statusBytes))
+	currentHash := fmt.Sprintf("%x", md5.Sum(hashBytes))
 
 	// Если хэш не изменился, пропускаем публикацию
 	if currentHash == p.lastBleStatusHash {
 		return false, nil
+	}
+
+	statusBytes, err := json.Marshal(status)
+	if err != nil {
+		return false, err
 	}
 
 	// Публикуем только если изменилось

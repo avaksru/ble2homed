@@ -106,10 +106,18 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	mqttClient := mqtt.NewClient(mqttConfig, log.Logger)
 
-	// 2. Создаем publisher
-	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger)
+	// Всегда работаем в режиме only_known_devices
+	cfg.OnlyKnownDevices = true
 
-	// 3. Создаем discovery
+	// 2. Создаем publisher
+	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger, version)
+
+	// 3. Загружаем список известных устройств из файла базы данных
+	if err := publisher.RefreshKnownDevicesFromDatabase(); err != nil {
+		return fmt.Errorf("failed to load known devices from database: %w", err)
+	}
+
+	// 4. Создаем discovery
 	hadiscovery := discovery.NewDiscovery(mqttClient, log.Logger)
 
 	// 4. Создаем history manager

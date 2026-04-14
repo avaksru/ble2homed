@@ -28,10 +28,12 @@ func DefaultConfig() *types.Config {
 			BasePrefix:     "/ble",
 			RetainPresence: false,
 		},
+		OnlyKnownDevices: true,
 		History: types.HistoryConfig{
 			Enabled:   true,
 			Intervals: []string{"1m", "10m", "1h", "24h", "7d"},
 		},
+		DatabasePath: "/opt/homed-ble/database.json",
 		Web: types.WebConfig{
 			Enabled: false,
 			Port:    8090,

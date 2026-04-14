@@ -105,6 +105,51 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 			}
 
 			if err := json.Unmarshal(payload, &cmd); err == nil {
+				if cmd.Action == "togglePermitJoin" {
+					s.logger.Info().Msg("Received togglePermitJoin command")
+					if err := s.publisher.SetPermitJoin(!s.publisher.IsPermitJoin()); err != nil {
+						s.logger.Error().Err(err).Msg("Failed to toggle permitJoin")
+						return
+					}
+					s.publisher.PublishBleStatusIfChanged()
+					return
+				}
+
+				if cmd.Action == "removeDevice" && cmd.Device != "" {
+					s.logger.Info().Str("device", cmd.Device).Msg("Received removeDevice command")
+					removedID, err := s.publisher.RemoveDevice(cmd.Device)
+					if err != nil {
+						s.logger.Error().Err(err).Str("device", cmd.Device).Msg("Failed to remove device")
+						return
+					}
+					s.publisher.PublishEvent("ble", map[string]string{"device": removedID, "event": "removed"})
+					s.publisher.PublishBleStatusNow()
+					return
+				}
+
+				if cmd.Action == "updateDevice" && cmd.Device != "" {
+					s.logger.Info().Str("device", cmd.Device).Msg("Received updateDevice command")
+
+					var updatePayload struct {
+						Action string                 `json:"action"`
+						Device string                 `json:"device"`
+						Data   map[string]interface{} `json:"data"`
+					}
+					if err := json.Unmarshal(payload, &updatePayload); err != nil {
+						s.logger.Error().Err(err).Msg("Failed to parse updateDevice payload")
+						return
+					}
+
+					if err := s.publisher.UpdateDevice(updatePayload.Device, updatePayload.Data); err != nil {
+						s.logger.Error().Err(err).Str("device", updatePayload.Device).Msg("Failed to update device")
+						return
+					}
+
+					s.publisher.PublishEvent("ble", map[string]string{"device": updatePayload.Device, "event": "updated"})
+					s.publisher.PublishBleStatusNow()
+					return
+				}
+
 				if cmd.Action == "getProperties" && cmd.Device != "" {
 					s.logger.Info().Str("device", cmd.Device).Msg("Received getProperties command")
 

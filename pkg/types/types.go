@@ -20,6 +20,7 @@ type Config struct {
 	MaxConnections     int                     `yaml:"max_connections" json:"max_connections"`
 	ConnectionTimeout  int                     `yaml:"connection_timeout" json:"connection_timeout"`
 	HistoryPath        string                  `yaml:"history_path" json:"history_path"`
+	DatabasePath       string                  `yaml:"database_path" json:"database_path"`
 	AdvertisedServices map[string]ServiceInfo  `yaml:"advertised_services" json:"advertised_services"`
 	HTTPPort           int                     `yaml:"http_port" json:"http_port"`
 	HTTPProxy          bool                    `yaml:"http_proxy" json:"http_proxy"`
@@ -178,13 +179,17 @@ type BleStatusDevice struct {
 	Exposes     []string          `json:"exposes"`
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
-	Options     map[string]ExposeOption `json:"options"`
+	Options     map[string]ExposeOption `json:"options,omitempty"`
 	Real        bool              `json:"real"`
 }
 
 // BleStatus — информация обо всех устройствах для топика status/ble
 type BleStatus struct {
-	Devices []BleStatusDevice `json:"devices"`
+	Devices    []BleStatusDevice `json:"devices"`
+	Names      bool              `json:"names"`
+	PermitJoin bool              `json:"permitJoin"`
+	Timestamp  int64             `json:"timestamp"`
+	Version    string            `json:"version"`
 }
 
 type ExposeCommon struct {
