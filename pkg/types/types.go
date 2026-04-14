@@ -382,6 +382,8 @@ func (d *Device) GetHomedExpose() HomedExpose {
 		}
 	}
 
+	items = append(items, "last")
+
 	return HomedExpose{
 		Common: ExposeCommon{
 			Items:   items,

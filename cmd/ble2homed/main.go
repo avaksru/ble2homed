@@ -156,15 +156,12 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	// Обработчик advertising данных
 	scanner.SetAdvertisementHandler(func(adv types.Advertisement) {
-		// Фильтр: если only_known_devices = true, пропускаем неизвестные устройства
-		if cfg.OnlyKnownDevices {
-			normalizedMAC := types.NormalizeMACForTopic(adv.Addr)
-			if _, known := cfg.KnownDevices[normalizedMAC]; !known {
-				log.Debug().
-					Str("mac", adv.Addr).
-					Msg("Skipping unknown device (only_known_devices=true)")
-				return
-			}
+		// Фильтр: если permitJoin = false, парсим только из базы известных устройств
+		if !publisher.ShouldProcessAdvertisement(adv.Addr) {
+			log.Debug().
+				Str("mac", adv.Addr).
+				Msg("Skipping unknown device (permitJoin=false)")
+			return
 		}
 
 		// Парсим данные

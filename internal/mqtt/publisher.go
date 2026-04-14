@@ -440,6 +440,20 @@ func (p *Publisher) IsDeviceNew(mac string) bool {
 	return !exists
 }
 
+func (p *Publisher) ShouldProcessAdvertisement(mac string) bool {
+	if p.IsPermitJoin() {
+		return true
+	}
+
+	normalizedMAC := types.NormalizeMACForTopic(mac)
+	if normalizedMAC == "" {
+		return false
+	}
+
+	_, known := p.config.KnownDevices[normalizedMAC]
+	return known
+}
+
 // PublishAdvertisement — публикация advertising данных в HOMEd стиле
 func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue) error {
 	device := p.GetOrCreateDevice(mac)
