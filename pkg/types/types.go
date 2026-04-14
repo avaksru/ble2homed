@@ -169,6 +169,7 @@ type DeviceExpose struct {
 // HomedExpose — стандартный формат expose для всех устройств
 type HomedExpose struct {
 	Common ExposeCommon `json:"common"`
+	Last   int64        `json:"last"`
 }
 
 // BleStatusDevice — информация об устройстве для топика status/ble
@@ -181,6 +182,7 @@ type BleStatusDevice struct {
 	Name        string            `json:"name"`
 	Options     map[string]ExposeOption `json:"options,omitempty"`
 	Real        bool              `json:"real"`
+	Last        int64             `json:"last"`
 }
 
 // BleStatus — информация обо всех устройствах для топика status/ble
@@ -385,6 +387,7 @@ func (d *Device) GetHomedExpose() HomedExpose {
 			Items:   items,
 			Options: options,
 		},
+		Last: d.LastSeen.Unix(),
 	}
 }
 

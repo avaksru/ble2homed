@@ -651,6 +651,7 @@ func (p *Publisher) publishBleStatus(force bool) (bool, error) {
 			homedExpose := device.GetHomedExpose()
 			statusDevice.Exposes = homedExpose.Common.Items
 			statusDevice.Options = homedExpose.Common.Options
+			statusDevice.Last = homedExpose.Last
 		}
 
 		status.Devices = append(status.Devices, statusDevice)
