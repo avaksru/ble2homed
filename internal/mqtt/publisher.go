@@ -134,12 +134,13 @@ func (p *Publisher) RemoveDevice(identifier string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	mac, device := p.findDeviceByIdentifier(identifier)
-	if device == nil {
+	mac, _ := p.findDeviceByIdentifier(identifier)
+	if mac == "" {
 		return "", fmt.Errorf("device not found: %s", identifier)
 	}
 
 	delete(p.devices, mac)
+	delete(p.deviceCreatedTimes, mac)
 
 	if p.config.KnownDevices != nil {
 		if _, exists := p.config.KnownDevices[mac]; exists {
@@ -153,7 +154,44 @@ func (p *Publisher) RemoveDevice(identifier string) (string, error) {
 		}
 	}
 
+	if err := p.removeDeviceFromDatabase(mac); err != nil {
+		return "", err
+	}
+
 	return mac, nil
+}
+
+func (p *Publisher) removeDeviceFromDatabase(mac string) error {
+	db, err := p.loadDeviceDatabase()
+	if err != nil {
+		return err
+	}
+
+	normalizedID := types.NormalizeMACForTopic(mac)
+	if normalizedID == "" {
+		normalizedID = mac
+	}
+
+	p.dbMu.Lock()
+	defer p.dbMu.Unlock()
+
+	filtered := make([]dbDevice, 0, len(db.Devices))
+	for _, entry := range db.Devices {
+		if types.NormalizeMACForTopic(entry.ID) == normalizedID {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	if len(filtered) == len(db.Devices) {
+		return nil
+	}
+
+	db.Devices = filtered
+	db.Timestamp = time.Now().Unix()
+	db.Version = p.version
+
+	return p.saveDeviceDatabase(db)
 }
 
 func (p *Publisher) UpdateDevice(identifier string, data map[string]interface{}) error {
