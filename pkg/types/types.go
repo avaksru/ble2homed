@@ -397,13 +397,9 @@ func floatPtr(f float64) *float64 {
 	return &f
 }
 
-// GetDeviceTopicName — получить имя для топика MQTT (имя устройства или MAC)
+// GetDeviceTopicName — получить MAC для топика MQTT
 func (c *Config) GetDeviceTopicName(mac string) string {
-	normalizedMAC := NormalizeMACForTopic(mac)
-	if knownDevice, exists := c.KnownDevices[normalizedMAC]; exists && knownDevice.Name != "" {
-		return knownDevice.Name
-	}
-	return normalizedMAC
+	return NormalizeMACForTopic(mac)
 }
 
 // GetPresenceTimeout — получить таймаут присутствия для устройства
