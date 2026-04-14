@@ -505,7 +505,7 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		if err != nil {
 			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to save device into database")
 		} else if newEntry {
-			p.PublishBleStatusIfChanged()
+			p.PublishBleStatusNow()
 		}
 	}
 
@@ -615,8 +615,9 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 
 // publishBleStatus — публикация статуса всех устройств в топик status/ble
 // Устройства сортируются в порядке, определённом в config.json (KnownDevicesOrder).
+// Если force=true, публикация выполняется независимо от хэша.
 // Возвращает true если был опубликован новый статус, false если ничего не изменилось.
-func (p *Publisher) publishBleStatus() (bool, error) {
+func (p *Publisher) publishBleStatus(force bool) (bool, error) {
 	base := p.config.MQTTPrefix
 	topic := fmt.Sprintf("%s/status/ble", base)
 
@@ -674,8 +675,8 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 	// Вычисляем хэш текущего состояния
 	currentHash := fmt.Sprintf("%x", md5.Sum(hashBytes))
 
-	// Если хэш не изменился, пропускаем публикацию
-	if currentHash == p.lastBleStatusHash {
+	// Если хэш не изменился и публикация не принудительная, пропускаем публикацию
+	if !force && currentHash == p.lastBleStatusHash {
 		return false, nil
 	}
 
@@ -684,7 +685,6 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 		return false, err
 	}
 
-	// Публикуем только если изменилось
 	if err := p.client.PublishJSON(topic, statusBytes, true); err != nil {
 		return false, err
 	}
@@ -701,7 +701,7 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 // PublishBleStatusIfChanged — публикация BLE статуса если произошли изменения
 // Вызывается при добавлении нового устройства или изменении статуса
 func (p *Publisher) PublishBleStatusIfChanged() {
-	published, err := p.publishBleStatus()
+	published, err := p.publishBleStatus(false)
 	if err != nil {
 		p.logger.Error().Err(err).Msg("Failed to publish BLE status")
 	} else if published {
@@ -710,7 +710,7 @@ func (p *Publisher) PublishBleStatusIfChanged() {
 }
 
 func (p *Publisher) PublishBleStatusNow() {
-	_, err := p.publishBleStatus()
+	_, err := p.publishBleStatus(true)
 	if err != nil {
 		p.logger.Error().Err(err).Msg("Failed to publish BLE status now")
 	}
