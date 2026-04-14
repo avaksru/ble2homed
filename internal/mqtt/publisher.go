@@ -23,7 +23,7 @@ type Publisher struct {
 	deviceCreatedTimes  map[string]time.Time // время создания каждого устройства
 	mu                  sync.RWMutex
 	dbMu                sync.Mutex
-	maxDevices          int    // максимальное количество устройств
+	maxDevices          int // максимальное количество устройств
 	version             string
 	permitJoin          bool
 	lastBleStatusHash   string // хэш последнего опубликованного status/ble
@@ -86,7 +86,7 @@ func (p *Publisher) GetOrCreateDevice(mac string) *types.Device {
 func (p *Publisher) GetDevice(identifier string) (*types.Device, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	
+
 	// Сначала пробуем как MAC
 	normalizedMAC := types.NormalizeMACForTopic(identifier)
 	if device, exists := p.devices[normalizedMAC]; exists {
@@ -103,6 +103,114 @@ func (p *Publisher) GetDevice(identifier string) (*types.Device, bool) {
 	}
 
 	return nil, false
+}
+
+func (p *Publisher) findDeviceByIdentifier(identifier string) (string, *types.Device) {
+	normalizedID := types.NormalizeMACForTopic(identifier)
+	if device, exists := p.devices[normalizedID]; exists {
+		return normalizedID, device
+	}
+
+	if _, exists := p.config.KnownDevices[normalizedID]; exists {
+		return normalizedID, nil
+	}
+
+	for mac, device := range p.devices {
+		if knownDevice, exists := p.config.KnownDevices[mac]; exists && knownDevice.Name != "" && strings.EqualFold(knownDevice.Name, identifier) {
+			return mac, device
+		}
+	}
+
+	for mac, knownDevice := range p.config.KnownDevices {
+		if knownDevice.Name != "" && strings.EqualFold(knownDevice.Name, identifier) {
+			return mac, nil
+		}
+	}
+
+	return "", nil
+}
+
+func (p *Publisher) RemoveDevice(identifier string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	mac, device := p.findDeviceByIdentifier(identifier)
+	if device == nil {
+		return "", fmt.Errorf("device not found: %s", identifier)
+	}
+
+	delete(p.devices, mac)
+
+	if p.config.KnownDevices != nil {
+		if _, exists := p.config.KnownDevices[mac]; exists {
+			delete(p.config.KnownDevices, mac)
+			for i, id := range p.config.KnownDevicesOrder {
+				if id == mac {
+					p.config.KnownDevicesOrder = append(p.config.KnownDevicesOrder[:i], p.config.KnownDevicesOrder[i+1:]...)
+					break
+				}
+			}
+		}
+	}
+
+	return mac, nil
+}
+
+func (p *Publisher) UpdateDevice(identifier string, data map[string]interface{}) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	mac, device := p.findDeviceByIdentifier(identifier)
+	if mac == "" {
+		mac = types.NormalizeMACForTopic(identifier)
+		if mac == "" {
+			mac = identifier
+		}
+	}
+
+	if device == nil {
+		device = types.NewDevice(mac)
+		p.devices[mac] = device
+	}
+
+	if p.config.KnownDevices == nil {
+		p.config.KnownDevices = make(map[string]types.KnownDevice)
+	}
+
+	knownDevice := p.config.KnownDevices[mac]
+
+	if name, ok := data["name"].(string); ok && name != "" {
+		device.Name = name
+		knownDevice.Name = name
+	}
+
+	if active, ok := data["active"].(bool); ok {
+		device.SetOnline(active)
+	}
+
+	if cloud, ok := data["cloud"].(bool); ok {
+		knownDevice.HOMEdCloud = cloud
+	}
+
+	if discovery, ok := data["discovery"].(bool); ok {
+		knownDevice.HOMEdDiscovery = discovery
+	}
+
+	p.config.KnownDevices[mac] = knownDevice
+	if !containsString(p.config.KnownDevicesOrder, mac) {
+		p.config.KnownDevicesOrder = append(p.config.KnownDevicesOrder, mac)
+	}
+
+	return nil
+}
+
+func containsString(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAllDevices — получение всех устройств
@@ -152,6 +260,10 @@ func (p *Publisher) SetPermitJoin(enabled bool) error {
 	}
 
 	return nil
+}
+
+func (p *Publisher) RefreshKnownDevicesFromDatabase() error {
+	return p.loadKnownDevicesFromDatabase()
 }
 
 func (p *Publisher) loadKnownDevicesFromDatabase() error {
@@ -247,14 +359,14 @@ func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
 	return false
 }
 
-func (p *Publisher) updateDeviceDatabase(device *types.Device) error {
+func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 	if !p.hasUsefulDeviceData(device) {
-		return nil
+		return false, nil
 	}
 
 	db, err := p.loadDeviceDatabase()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	p.dbMu.Lock()
@@ -283,6 +395,7 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) error {
 		}
 	}
 
+	newEntry := false
 	if !updated {
 		db.Devices = append(db.Devices, dbDevice{
 			Active:    device.IsOnline(),
@@ -293,12 +406,26 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) error {
 			Name:      name,
 			Real:      false,
 		})
+		newEntry = true
+		if p.config.KnownDevices == nil {
+			p.config.KnownDevices = make(map[string]types.KnownDevice)
+		}
+		p.config.KnownDevices[normalizedID] = types.KnownDevice{
+			Name:           name,
+			HOMEdCloud:     false,
+			HOMEdDiscovery: false,
+		}
+		p.config.KnownDevicesOrder = append(p.config.KnownDevicesOrder, normalizedID)
 	}
 
 	db.Timestamp = time.Now().Unix()
 	db.Version = p.version
 
-	return p.saveDeviceDatabase(db)
+	if err := p.saveDeviceDatabase(db); err != nil {
+		return false, err
+	}
+
+	return newEntry, nil
 }
 
 // IsDeviceNew — проверка, является ли устройство недавно добавленным
@@ -374,8 +501,11 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	}
 
 	if p.IsPermitJoin() {
-		if err := p.updateDeviceDatabase(device); err != nil {
+		newEntry, err := p.updateDeviceDatabase(device)
+		if err != nil {
 			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to save device into database")
+		} else if newEntry {
+			p.PublishBleStatusIfChanged()
 		}
 	}
 
@@ -480,7 +610,7 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 	}
 
 	payloadBytes, _ := json.Marshal(payload)
-	return p.client.PublishJSON(topic, payloadBytes, true)
+	return p.client.PublishJSON(topic, payloadBytes, false)
 }
 
 // publishBleStatus — публикация статуса всех устройств в топик status/ble
@@ -529,8 +659,8 @@ func (p *Publisher) publishBleStatus() (bool, error) {
 	// чтобы timestamp не ломал логику публикации при отсутствии изменений.
 	hashSource := struct {
 		Devices    []types.BleStatusDevice `json:"devices"`
-		PermitJoin bool                   `json:"permitJoin"`
-		Names      bool                   `json:"names"`
+		PermitJoin bool                    `json:"permitJoin"`
+		Names      bool                    `json:"names"`
 	}{
 		Devices:    status.Devices,
 		PermitJoin: status.PermitJoin,
@@ -579,6 +709,13 @@ func (p *Publisher) PublishBleStatusIfChanged() {
 	}
 }
 
+func (p *Publisher) PublishBleStatusNow() {
+	_, err := p.publishBleStatus()
+	if err != nil {
+		p.logger.Error().Err(err).Msg("Failed to publish BLE status now")
+	}
+}
+
 // PublishHistoryValue — публикация исторического значения
 func (p *Publisher) PublishHistoryValue(mac, field, interval string, value float64) error {
 	base := p.config.Publish.BasePrefix
@@ -608,6 +745,17 @@ func (p *Publisher) PublishCommandResponse(mac, service, char string, data []byt
 	return p.client.Publish(topic, data, false)
 }
 
+func (p *Publisher) PublishEvent(eventType string, payload interface{}) error {
+	topic := fmt.Sprintf("%s/event/%s", p.config.Publish.BasePrefix, eventType)
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	return p.client.PublishJSON(topic, jsonBytes, false)
+}
+
 // publishDeviceStatus — публикация статуса устройства (online/offline)
 func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time.Time) error {
 	topicName := p.config.GetDeviceTopicName(mac)
@@ -619,7 +767,7 @@ func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time
 	}
 
 	payloadBytes, _ := json.Marshal(payload)
-	return p.client.PublishJSON(topic, payloadBytes, true)
+	return p.client.PublishJSON(topic, payloadBytes, false)
 }
 
 // CheckOfflineDevices — проверка устройств на offline по presence_timeout

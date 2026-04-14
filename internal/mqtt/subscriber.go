@@ -19,6 +19,31 @@ type Subscriber struct {
 	logger    zerolog.Logger
 }
 
+type bleCommand struct {
+	Action string                 `json:"action"`
+	Device string                 `json:"device,omitempty"`
+	ID     string                 `json:"id,omitempty"`
+	Data   map[string]interface{} `json:"data,omitempty"`
+}
+
+func (c bleCommand) Identifier() string {
+	if c.Device != "" {
+		return c.Device
+	}
+	if c.ID != "" {
+		return c.ID
+	}
+	if c.Data != nil {
+		if nestedID, ok := c.Data["id"].(string); ok && nestedID != "" {
+			return nestedID
+		}
+		if nestedDevice, ok := c.Data["device"].(string); ok && nestedDevice != "" {
+			return nestedDevice
+		}
+	}
+	return ""
+}
+
 // CommandHandler — интерфейс обработчика команд
 type CommandHandler interface {
 	HandleWrite(mac, service, char string, payload []byte) error
@@ -99,90 +124,96 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 
 		// Обработка команд из топика /command/ble
 		if topic == fmt.Sprintf("%s/command/ble", s.base) {
-			var cmd struct {
-				Action string `json:"action"`
-				Device string `json:"device"`
+			var cmd bleCommand
+
+			if err := json.Unmarshal(payload, &cmd); err != nil {
+				s.logger.Error().Err(err).Msg("Failed to parse BLE command payload")
+				return
 			}
 
-			if err := json.Unmarshal(payload, &cmd); err == nil {
-				if cmd.Action == "togglePermitJoin" {
-					s.logger.Info().Msg("Received togglePermitJoin command")
-					if err := s.publisher.SetPermitJoin(!s.publisher.IsPermitJoin()); err != nil {
-						s.logger.Error().Err(err).Msg("Failed to toggle permitJoin")
-						return
-					}
-					s.publisher.PublishBleStatusIfChanged()
+			deviceID := cmd.Identifier()
+
+			switch cmd.Action {
+			case "togglePermitJoin":
+				s.logger.Info().Msg("Received togglePermitJoin command")
+				if err := s.publisher.SetPermitJoin(!s.publisher.IsPermitJoin()); err != nil {
+					s.logger.Error().Err(err).Msg("Failed to toggle permitJoin")
+					return
+				}
+				s.publisher.PublishBleStatusIfChanged()
+				return
+
+			case "removeDevice":
+				if deviceID == "" {
+					s.logger.Warn().Msg("removeDevice command missing device identifier")
+					return
+				}
+				s.logger.Info().Str("device", deviceID).Msg("Received removeDevice command")
+				removedID, err := s.publisher.RemoveDevice(deviceID)
+				if err != nil {
+					s.logger.Error().Err(err).Str("device", deviceID).Msg("Failed to remove device")
+					return
+				}
+				s.publisher.PublishEvent("ble", map[string]string{"device": removedID, "event": "removed"})
+				s.publisher.PublishBleStatusNow()
+				return
+
+			case "updateDevice":
+				if deviceID == "" {
+					s.logger.Warn().Msg("updateDevice command missing device identifier")
+					return
+				}
+				if len(cmd.Data) == 0 {
+					s.logger.Warn().Str("device", deviceID).Msg("updateDevice command missing data payload")
+					return
+				}
+				s.logger.Info().Str("device", deviceID).Msg("Received updateDevice command")
+
+				if err := s.publisher.UpdateDevice(deviceID, cmd.Data); err != nil {
+					s.logger.Error().Err(err).Str("device", deviceID).Msg("Failed to update device")
 					return
 				}
 
-				if cmd.Action == "removeDevice" && cmd.Device != "" {
-					s.logger.Info().Str("device", cmd.Device).Msg("Received removeDevice command")
-					removedID, err := s.publisher.RemoveDevice(cmd.Device)
-					if err != nil {
-						s.logger.Error().Err(err).Str("device", cmd.Device).Msg("Failed to remove device")
-						return
-					}
-					s.publisher.PublishEvent("ble", map[string]string{"device": removedID, "event": "removed"})
-					s.publisher.PublishBleStatusNow()
+				s.publisher.PublishEvent("ble", map[string]string{"device": deviceID, "event": "updated"})
+				s.publisher.PublishBleStatusNow()
+				return
+
+			case "getProperties":
+				if deviceID == "" {
+					s.logger.Warn().Msg("getProperties command missing device identifier")
+					return
+				}
+				s.logger.Info().Str("device", deviceID).Msg("Received getProperties command")
+
+				device, exists := s.publisher.GetDevice(deviceID)
+				if !exists {
+					s.logger.Warn().Str("device", deviceID).Msg("Device not found for getProperties request")
 					return
 				}
 
-				if cmd.Action == "updateDevice" && cmd.Device != "" {
-					s.logger.Info().Str("device", cmd.Device).Msg("Received updateDevice command")
-
-					var updatePayload struct {
-						Action string                 `json:"action"`
-						Device string                 `json:"device"`
-						Data   map[string]interface{} `json:"data"`
-					}
-					if err := json.Unmarshal(payload, &updatePayload); err != nil {
-						s.logger.Error().Err(err).Msg("Failed to parse updateDevice payload")
-						return
-					}
-
-					if err := s.publisher.UpdateDevice(updatePayload.Device, updatePayload.Data); err != nil {
-						s.logger.Error().Err(err).Str("device", updatePayload.Device).Msg("Failed to update device")
-						return
-					}
-
-					s.publisher.PublishEvent("ble", map[string]string{"device": updatePayload.Device, "event": "updated"})
-					s.publisher.PublishBleStatusNow()
+				fdData := device.GetFDFlat()
+				fdBytes, err := json.Marshal(fdData)
+				if err != nil {
+					s.logger.Error().Err(err).Str("device", deviceID).Msg("Failed to marshal device properties")
 					return
 				}
 
-				if cmd.Action == "getProperties" && cmd.Device != "" {
-					s.logger.Info().Str("device", cmd.Device).Msg("Received getProperties command")
+				topicName := s.publisher.Config().GetDeviceTopicName(device.MAC)
+				fdTopic := fmt.Sprintf("%s/fd/ble/%s", s.publisher.Config().Publish.BasePrefix, topicName)
 
-					// Ищем устройство (поддерживаем как MAC так и имя)
-					device, exists := s.publisher.GetDevice(cmd.Device)
-					if !exists {
-						s.logger.Warn().Str("device", cmd.Device).Msg("Device not found for getProperties request")
-						return
-					}
-
-					// Получаем плоский формат данных устройства
-					fdData := device.GetFDFlat()
-					fdBytes, err := json.Marshal(fdData)
-					if err != nil {
-						s.logger.Error().Err(err).Str("device", cmd.Device).Msg("Failed to marshal device properties")
-						return
-					}
-
-					// Публикуем в топик fd/{device}
-					topicName := s.publisher.Config().GetDeviceTopicName(device.MAC)
-					fdTopic := fmt.Sprintf("%s/fd/ble/%s", s.publisher.Config().Publish.BasePrefix, topicName)
-
-					if err := s.client.PublishJSON(fdTopic, fdBytes, false); err != nil {
-						s.logger.Error().Err(err).Str("topic", fdTopic).Msg("Failed to publish device properties")
-					} else {
-						s.logger.Debug().Str("topic", fdTopic).Msg("Device properties published successfully")
-					}
-
-					return
+				if err := s.client.PublishJSON(fdTopic, fdBytes, false); err != nil {
+					s.logger.Error().Err(err).Str("topic", fdTopic).Msg("Failed to publish device properties")
+				} else {
+					s.logger.Debug().Str("topic", fdTopic).Msg("Device properties published successfully")
 				}
+
+				return
+
+			default:
+				s.logger.Warn().Str("action", cmd.Action).Msg("Unknown BLE command action")
+				return
 			}
 		}
-
 		s.logger.Warn().Str("topic", topic).Msg("Unknown command topic format")
 	}
 
