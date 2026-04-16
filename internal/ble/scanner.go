@@ -15,16 +15,18 @@ import (
 
 // Scanner — BLE сканер устройств
 type Scanner struct {
-	config     *types.BLEConfig
-	logger     zerolog.Logger
-	adapter    *bluetooth.Adapter
-	filterMACs map[string]bool
-	onAdv      func(types.Advertisement)
-	mu         sync.RWMutex
-	running    bool
-	cancel     context.CancelFunc
-	macCache   map[string]string // кэш нормализованных MAC-адресов
-	advPool    sync.Pool         // пул объектов Advertisement
+	config         *types.BLEConfig
+	logger         zerolog.Logger
+	adapter        *bluetooth.Adapter
+	filterMACs     map[string]bool
+	onAdv          func(types.Advertisement)
+	mu             sync.RWMutex
+	running        bool
+	cancel         context.CancelFunc
+	macCache       map[string]string // кэш нормализованных MAC-адресов
+	advPool        sync.Pool         // пул объектов Advertisement
+	lastAdvTime    time.Time         // время последнего полученного рекламационного пакета
+	watchdogCancel context.CancelFunc
 }
 
 // NewScanner — создание нового BLE сканера
@@ -45,11 +47,12 @@ func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error
 	}
 
 	return &Scanner{
-		config:     config,
-		logger:     logger.With().Str("component", "ble_scanner").Logger(),
-		adapter:    adapter,
-		filterMACs: filterMACs,
-		macCache:   make(map[string]string),
+		config:         config,
+		logger:         logger.With().Str("component", "ble_scanner").Logger(),
+		adapter:        adapter,
+		filterMACs:     filterMACs,
+		macCache:       make(map[string]string),
+		lastAdvTime:    time.Now(),
 		advPool: sync.Pool{
 			New: func() interface{} {
 				return &types.Advertisement{}
@@ -78,9 +81,14 @@ func (s *Scanner) Start(ctx context.Context) error {
 	s.running = true
 	s.mu.Unlock()
 
-	s.logger.Info().
-		Int("filter_count", len(s.filterMACs)).
-		Msg("Starting BLE scanner")
+		s.logger.Info().
+			Int("filter_count", len(s.filterMACs)).
+			Msg("Starting BLE scanner")
+
+	// Запускаем вотчдог для детектирования зависаний
+	watchdogCtx, watchdogCancel := context.WithCancel(ctx)
+	s.watchdogCancel = watchdogCancel
+	go s.watchdogLoop(watchdogCtx)
 
 	// Запускаем сканирование в отдельной горутине
 	go s.scanLoop(ctx)
@@ -118,6 +126,11 @@ func (s *Scanner) Stop() {
 		}
 	}
 	s.mu.Unlock()
+
+	// Останавливаем вотчдог
+	if s.watchdogCancel != nil {
+		s.watchdogCancel()
+	}
 
 	// Ждем с таймаутом полной остановки всех операций
 	timeout := time.After(5 * time.Second)
@@ -255,6 +268,10 @@ func (s *Scanner) doScan(ctx context.Context) error {
 				})
 			}
 		}
+
+		s.mu.Lock()
+		s.lastAdvTime = time.Now()
+		s.mu.Unlock()
 
 		s.logger.Debug().
 			Str("mac", adv.Addr).
@@ -451,4 +468,46 @@ func (s *Scanner) normalizeMACCached(mac string) string {
 	s.mu.Unlock()
 
 	return normalized
+}
+
+// watchdogLoop - вотчдог который отслеживает зависание bluetooth стека
+func (s *Scanner) watchdogLoop(ctx context.Context) {
+	const watchdogTimeout = 300 * time.Second
+	checkTicker := time.NewTicker(15 * time.Second)
+	defer checkTicker.Stop()
+
+	s.logger.Info().Dur("timeout", watchdogTimeout).Msg("Watchdog started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Msg("Watchdog stopped")
+			return
+		case <-checkTicker.C:
+			s.mu.RLock()
+			timeSinceLastAdv := time.Since(s.lastAdvTime)
+			s.mu.RUnlock()
+
+			if timeSinceLastAdv > watchdogTimeout {
+				s.logger.Error().
+					Dur("since_last", timeSinceLastAdv).
+					Msg("❌ NO BLE PACKETS RECEIVED FOR TOO LONG! Bluetooth stack probably hanged. Restarting adapter...")
+
+				// Принудительно останавливаем сканирование и перезапускаем адаптер
+				s.mu.Lock()
+				if err := s.adapter.StopScan(); err != nil {
+					s.logger.Warn().Err(err).Msg("Failed to stop scan during recovery")
+				}
+
+				// Переинициализируем адаптер полностью
+				if err := s.adapter.Enable(); err != nil {
+					s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter during recovery")
+				}
+				s.lastAdvTime = time.Now()
+				s.mu.Unlock()
+
+				s.logger.Info().Msg("✅ BLE adapter restarted successfully, scan will resume automatically")
+			}
+		}
+	}
 }
