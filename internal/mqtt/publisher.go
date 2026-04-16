@@ -21,6 +21,7 @@ type Publisher struct {
 	logger              zerolog.Logger
 	devices             map[string]*types.Device
 	deviceCreatedTimes  map[string]time.Time // время создания каждого устройства
+	offlinePublished    map[string]bool      // флаг что оффлайн статус уже был отправлен
 	mu                  sync.RWMutex
 	dbMu                sync.Mutex
 	maxDevices          int // максимальное количество устройств
@@ -51,6 +52,7 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger, v
 		logger:             logger.With().Str("component", "publisher").Logger(),
 		devices:            make(map[string]*types.Device),
 		deviceCreatedTimes: make(map[string]time.Time),
+		offlinePublished:   make(map[string]bool),
 		maxDevices:         maxDevices,
 		version:            version,
 		permitJoin:         !config.OnlyKnownDevices,
@@ -610,6 +612,11 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish online status")
 	}
 
+	// Сбрасываем флаг отправки оффлайн статуса когда устройство вернулось онлайн
+	p.mu.Lock()
+	delete(p.offlinePublished, mac)
+	p.mu.Unlock()
+
 	// Если устройство перешло из оффлайна — логируем это отдельно
 	if wasOffline {
 		p.logger.Info().Str("mac", mac).Msg("Device came online")
@@ -798,7 +805,7 @@ func (p *Publisher) publishBleStatus(force bool) (bool, error) {
 		device, deviceExists := p.devices[mac]
 
 		statusDevice := types.BleStatusDevice{
-			Active:    deviceExists && device.IsOnline(),
+			Active:    true,
 			Cloud:     knownDevice.HOMEdCloud,
 			Discovery: knownDevice.HOMEdDiscovery,
 			ID:        mac,
@@ -806,12 +813,24 @@ func (p *Publisher) publishBleStatus(force bool) (bool, error) {
 			Real:      true,
 		}
 
-		// Получаем expose только для активных устройств
+		// Получаем expose для устройств
 		if deviceExists {
 			homedExpose := device.GetHomedExpose()
 			statusDevice.Exposes = homedExpose.Common.Items
 			statusDevice.Options = homedExpose.Common.Options
 			statusDevice.Last = homedExpose.Last
+		} else {
+			// Если устройства нет в памяти - берем exposes из базы данных
+			db, err := p.loadDeviceDatabase()
+			if err == nil {
+				for _, dbDevice := range db.Devices {
+					if types.NormalizeMACForTopic(dbDevice.ID) == mac {
+						statusDevice.Exposes = dbDevice.Exposes
+						statusDevice.Last = 0
+						break
+					}
+				}
+			}
 		}
 
 		status.Devices = append(status.Devices, statusDevice)
@@ -965,14 +984,25 @@ func (p *Publisher) CheckOfflineDevices() {
 			// Устройство offline — используем потокобезопасный метод
 			device.SetOnline(false)
 
-			p.logger.Info().
-				Str("mac", mac).
-				Float64("elapsed", elapsed).
-				Int("timeout", timeout).
-				Msg("Device went offline (timeout)")
+			// ✅ Отправляем статус OFFLINE ТОЛЬКО ОДИН РАЗ при переходе
+			p.mu.Lock()
+			alreadySent := p.offlinePublished[mac]
+			p.mu.Unlock()
 
-			if err := p.publishDeviceStatus(mac, "offline", lastSeen); err != nil {
-				p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish offline status")
+			if !alreadySent {
+				p.logger.Info().
+					Str("mac", mac).
+					Float64("elapsed", elapsed).
+					Int("timeout", timeout).
+					Msg("Device went offline (timeout)")
+
+				if err := p.publishDeviceStatus(mac, "offline", lastSeen); err != nil {
+					p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish offline status")
+				} else {
+					p.mu.Lock()
+					p.offlinePublished[mac] = true
+					p.mu.Unlock()
+				}
 			}
 		}
 	}
@@ -982,13 +1012,24 @@ func (p *Publisher) CheckOfflineDevices() {
 		for mac := range p.config.KnownDevices {
 			_, exists := p.devices[mac]
 			if !exists {
-				// Устройство не найдено в активных — публикуем offline
-				if err := p.publishDeviceOffline(mac, &types.Device{
-					MAC:      mac,
-					LastSeen: time.Now(),
-					Online:   false,
-				}); err != nil {
-					p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish offline status for known device")
+				// ✅ Отправляем статус OFFLINE ТОЛЬКО ОДИН РАЗ для известных устройств
+				p.mu.Lock()
+				alreadySent := p.offlinePublished[mac]
+				p.mu.Unlock()
+
+				if !alreadySent {
+					// Устройство не найдено в активных — публикуем offline
+					if err := p.publishDeviceOffline(mac, &types.Device{
+						MAC:      mac,
+						LastSeen: time.Now(),
+						Online:   false,
+					}); err != nil {
+						p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish offline status for known device")
+					} else {
+						p.mu.Lock()
+						p.offlinePublished[mac] = true
+						p.mu.Unlock()
+					}
 				}
 			}
 		}
