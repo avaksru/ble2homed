@@ -41,6 +41,10 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger, v
 		config.DatabasePath = "/opt/homed-ble/database.json"
 	}
 
+	// Настраиваем zerolog для вывода в консоль с уровнем из конфигурации
+	zerolog.TimeFieldFormat = time.RFC3339
+	zerolog.SetGlobalLevel(getLogLevel(config.Log.Level))
+
 	return &Publisher{
 		client:             client,
 		config:             config,
@@ -50,6 +54,21 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger, v
 		maxDevices:         maxDevices,
 		version:            version,
 		permitJoin:         !config.OnlyKnownDevices,
+	}
+}
+
+func getLogLevel(level string) zerolog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return zerolog.DebugLevel
+	case "info":
+		return zerolog.InfoLevel
+	case "warn":
+		return zerolog.WarnLevel
+	case "error":
+		return zerolog.ErrorLevel
+	default:
+		return zerolog.InfoLevel
 	}
 }
 
@@ -629,6 +648,17 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	if err := p.publishExpose(mac, device); err != nil {
 		return err
 	}
+
+	if p.IsPermitJoin() {
+		newEntry, err := p.updateDeviceDatabase(device)
+		if err != nil {
+			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to save device into database")
+		} else if newEntry {
+			p.PublishBleStatusNow()
+		}
+	}
+
+	return nil
 
 	if p.IsPermitJoin() {
 		newEntry, err := p.updateDeviceDatabase(device)

@@ -84,7 +84,7 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 			if err := handler.HandleWrite(mac, service, char, payload); err != nil {
 				s.logger.Error().Err(err).Msg("Failed to handle write command")
 			} else {
-				s.publisher.PublishCommandResponse(mac, service, char, payload, "written")
+s.publisher.PublishCommandResponse(mac, service, char, payload, "written")
 			}
 			return
 		}
@@ -96,7 +96,7 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 			if err != nil {
 				s.logger.Error().Err(err).Msg("Failed to handle read command")
 			} else {
-				s.publisher.PublishCommandResponse(mac, service, char, data, "data")
+s.publisher.PublishCommandResponse(mac, service, char, data, "data")
 			}
 			return
 		}
@@ -117,7 +117,7 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 			if err := handler.HandlePing(mac); err != nil {
 				s.logger.Error().Err(err).Msg("Failed to handle ping command")
 			} else {
-				s.publisher.PublishCommandResponse(mac, "", "", nil, "pong")
+s.publisher.PublishCommandResponse(mac, "", "", nil, "pong")
 			}
 			return
 		}
@@ -154,8 +154,8 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 					s.logger.Error().Err(err).Str("device", deviceID).Msg("Failed to remove device")
 					return
 				}
-				s.publisher.PublishEvent("ble", map[string]string{"device": removedID, "event": "removed"})
-				s.publisher.PublishBleStatusNow()
+s.publisher.PublishEvent("ble", map[string]string{"device": removedID, "event": "removed"})
+s.publisher.PublishBleStatusNow()
 				return
 
 			case "updateDevice":
@@ -174,8 +174,8 @@ func (s *Subscriber) SubscribeCommands(handler CommandHandler) error {
 					return
 				}
 
-				s.publisher.PublishEvent("ble", map[string]string{"device": deviceID, "event": "updated"})
-				s.publisher.PublishBleStatusNow()
+s.publisher.PublishEvent("ble", map[string]string{"device": deviceID, "event": "updated"})
+s.publisher.PublishBleStatusNow()
 				return
 
 			case "getProperties":
