@@ -6,12 +6,71 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/avaksru/ble2homed/pkg/types"
 	"github.com/rs/zerolog"
 	"tinygo.org/x/bluetooth"
 )
+
+// timeShard — один сегмент сегментированной карты времени
+type timeShard struct {
+	mu     sync.RWMutex
+	values map[string]time.Time
+}
+
+// shardedTimeMap — сегментированная карта для минимальных конфликтов блокировок
+type shardedTimeMap struct {
+	shards [16]timeShard
+}
+
+func newShardedTimeMap() *shardedTimeMap {
+	m := &shardedTimeMap{}
+	for i := range m.shards {
+		m.shards[i].values = make(map[string]time.Time)
+	}
+	return m
+}
+
+func (m *shardedTimeMap) getShard(key string) *timeShard {
+	hash := uint8(0)
+	if len(key) > 0 {
+		hash = key[0]
+	}
+	return &m.shards[hash%16]
+}
+
+func (m *shardedTimeMap) Get(key string) (time.Time, bool) {
+	shard := m.getShard(key)
+	shard.mu.RLock()
+	t, ok := shard.values[key]
+	shard.mu.RUnlock()
+	return t, ok
+}
+
+func (m *shardedTimeMap) Set(key string, t time.Time) {
+	shard := m.getShard(key)
+	shard.mu.Lock()
+	shard.values[key] = t
+	shard.mu.Unlock()
+}
+
+func (m *shardedTimeMap) Cleanup(olderThan time.Time) int {
+	removed := 0
+	for i := range m.shards {
+		shard := &m.shards[i]
+		shard.mu.Lock()
+		for k, v := range shard.values {
+			if v.Before(olderThan) {
+				delete(shard.values, k)
+				removed++
+			}
+		}
+		shard.mu.Unlock()
+	}
+	return removed
+}
 
 // Scanner — BLE сканер устройств
 type Scanner struct {
@@ -23,11 +82,13 @@ type Scanner struct {
 	mu             sync.RWMutex
 	running        bool
 	cancel         context.CancelFunc
-	macCache       map[string]string // кэш нормализованных MAC-адресов
-	advPool        sync.Pool         // пул объектов Advertisement
-	lastAdvTime    time.Time         // время последнего полученного рекламационного пакета
-	lastDeviceTime map[string]time.Time // дедубликация по устройствам
+	macCache       sync.Map // lock-free кэш нормализованных MAC-адресов
+	advPool        sync.Pool // пул объектов Advertisement
+	bytesPool      sync.Pool // пул байтовых буферов для manufacturer data
+	lastAdvTime    atomic.Pointer[time.Time] // время последнего пакета (lock-free)
+	lastDeviceTime *shardedTimeMap // сегментированная карта дедубликации
 	watchdogCancel context.CancelFunc
+	debugEnabled   bool
 }
 
 // NewScanner — создание нового BLE сканера
@@ -47,20 +108,30 @@ func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error
 		filterMACs[normalized] = true
 	}
 
-	return &Scanner{
+	now := time.Now()
+
+	s := &Scanner{
 		config:         config,
 		logger:         logger.With().Str("component", "ble_scanner").Logger(),
 		adapter:        adapter,
 		filterMACs:     filterMACs,
-		macCache:       make(map[string]string),
-		lastAdvTime:    time.Now(),
-		lastDeviceTime: make(map[string]time.Time),
+		lastDeviceTime: newShardedTimeMap(),
+		debugEnabled:   logger.GetLevel() <= zerolog.DebugLevel,
 		advPool: sync.Pool{
 			New: func() interface{} {
 				return &types.Advertisement{}
 			},
 		},
-	}, nil
+		bytesPool: sync.Pool{
+			New: func() interface{} {
+				buf := make([]byte, 0, 128)
+				return &buf
+			},
+		},
+	}
+	s.lastAdvTime.Store(&now)
+
+	return s, nil
 }
 
 // SetAdvertisementHandler — установка обработчика advertising данных
@@ -238,15 +309,12 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		}
 
 		// ✅ Дедубликация: игнорируем пакеты от одного устройства чаще чем раз в 1 секунду
-		s.mu.Lock()
-		lastTime, exists := s.lastDeviceTime[addr]
 		now := time.Now()
+		lastTime, exists := s.lastDeviceTime.Get(addr)
 		if exists && now.Sub(lastTime) < 1*time.Second {
-			s.mu.Unlock()
 			return
 		}
-		s.lastDeviceTime[addr] = now
-		s.mu.Unlock()
+		s.lastDeviceTime.Set(addr, now)
 
 		// Получаем объект из пула
 		advPtr := s.advPool.Get().(*types.Advertisement)
@@ -287,9 +355,7 @@ func (s *Scanner) doScan(ctx context.Context) error {
 			}
 		}
 
-		s.mu.Lock()
-		s.lastAdvTime = time.Now()
-		s.mu.Unlock()
+		s.lastAdvTime.Store(&now)
 
 		s.logger.Debug().
 			Str("mac", adv.Addr).
@@ -470,20 +536,14 @@ func normalizeMAC(mac string) string {
 	return mac
 }
 
-// normalizeMACCached — нормализация MAC-адреса с кэшированием
+// normalizeMACCached — нормализация MAC-адреса с кэшированием (lock-free)
 func (s *Scanner) normalizeMACCached(mac string) string {
-	s.mu.RLock()
-	if cached, ok := s.macCache[mac]; ok {
-		s.mu.RUnlock()
-		return cached
+	if cached, ok := s.macCache.Load(mac); ok {
+		return cached.(string)
 	}
-	s.mu.RUnlock()
 
 	normalized := normalizeMAC(mac)
-
-	s.mu.Lock()
-	s.macCache[mac] = normalized
-	s.mu.Unlock()
+	s.macCache.Store(mac, normalized)
 
 	return normalized
 }
@@ -502,9 +562,8 @@ func (s *Scanner) watchdogLoop(ctx context.Context) {
 			s.logger.Info().Msg("Watchdog stopped")
 			return
 		case <-checkTicker.C:
-			s.mu.RLock()
-			timeSinceLastAdv := time.Since(s.lastAdvTime)
-			s.mu.RUnlock()
+			lastAdv := s.lastAdvTime.Load()
+			timeSinceLastAdv := time.Since(*lastAdv)
 
 			if timeSinceLastAdv > watchdogTimeout {
 				s.logger.Error().
@@ -521,7 +580,8 @@ func (s *Scanner) watchdogLoop(ctx context.Context) {
 				if err := s.adapter.Enable(); err != nil {
 					s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter during recovery")
 				}
-				s.lastAdvTime = time.Now()
+				now := time.Now()
+				s.lastAdvTime.Store(&now)
 				s.mu.Unlock()
 
 				s.logger.Info().Msg("✅ BLE adapter restarted successfully, scan will resume automatically")
