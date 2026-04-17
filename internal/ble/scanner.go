@@ -26,6 +26,7 @@ type Scanner struct {
 	macCache       map[string]string // кэш нормализованных MAC-адресов
 	advPool        sync.Pool         // пул объектов Advertisement
 	lastAdvTime    time.Time         // время последнего полученного рекламационного пакета
+	lastDeviceTime map[string]time.Time // дедубликация по устройствам
 	watchdogCancel context.CancelFunc
 }
 
@@ -53,6 +54,7 @@ func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error
 		filterMACs:     filterMACs,
 		macCache:       make(map[string]string),
 		lastAdvTime:    time.Now(),
+		lastDeviceTime: make(map[string]time.Time),
 		advPool: sync.Pool{
 			New: func() interface{} {
 				return &types.Advertisement{}
@@ -229,6 +231,22 @@ func (s *Scanner) doScan(ctx context.Context) error {
 				return
 			}
 		}
+
+		// ✅ Фильтр по минимальному RSSI
+		if int(scanResult.RSSI) < -90 {
+			return
+		}
+
+		// ✅ Дедубликация: игнорируем пакеты от одного устройства чаще чем раз в 1 секунду
+		s.mu.Lock()
+		lastTime, exists := s.lastDeviceTime[addr]
+		now := time.Now()
+		if exists && now.Sub(lastTime) < 1*time.Second {
+			s.mu.Unlock()
+			return
+		}
+		s.lastDeviceTime[addr] = now
+		s.mu.Unlock()
 
 		// Получаем объект из пула
 		advPtr := s.advPool.Get().(*types.Advertisement)
@@ -472,8 +490,8 @@ func (s *Scanner) normalizeMACCached(mac string) string {
 
 // watchdogLoop - вотчдог который отслеживает зависание bluetooth стека
 func (s *Scanner) watchdogLoop(ctx context.Context) {
-	const watchdogTimeout = 300 * time.Second
-	checkTicker := time.NewTicker(15 * time.Second)
+	const watchdogTimeout = 600 * time.Second
+	checkTicker := time.NewTicker(60 * time.Second)
 	defer checkTicker.Stop()
 
 	s.logger.Info().Dur("timeout", watchdogTimeout).Msg("Watchdog started")

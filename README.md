@@ -93,36 +93,30 @@ sudo systemctl enable --now ble2homed
 
 Файл конфигурации может быть в формате YAML или JSON.
 
-### Пример конфигурации config.yaml
+### Пример конфигурации homed-ble.conf
 
-```yaml
-mqtt:
-  broker: "tcp://localhost:1883"
-  username: ""
-  password: ""
-  client_id: "ble2homed"
-  qos: 1
-
-ble:
-  adapter: "hci0"
-  scan_timeout: "0s"  # 0 = непрерывное сканирование
-  filter_macs: []     # пустой список = принимать все устройства
-  connect: false      # автоматически подключаться для GATT операций
-
-publish:
-  base_prefix: "/ble"
-  retain_presence: true
-
-history:
-  enabled: true
-  intervals: ["1m", "10m", "1h", "24h", "7d"]
-
-web:
-  enabled: false
-  port: 8181
-
-log:
-  level: "info"       # debug | info | warn | error
+```json
+{
+  "log": {
+    "level": "warn"
+  },
+  "retain": false,
+  "history": {
+    "enabled": false
+  },
+  "ble": {
+    "scan_interval": 20,
+    "restart_pause": 40
+  },
+  "web": {
+    "enabled": false,
+    "port": 8081
+  },
+  "presence_timeout": 60,
+  "mqtt_host": "tcp://localhost:1883",
+  "mqtt_prefix": "homed",
+  "mqtt_format_json": true
+}
 ```
 
 ## 📡 MQTT Топики (стандарт HOMEd)
@@ -168,7 +162,8 @@ log:
 | Ошибка доступа к адаптеру | Установите права capabilities: `sudo setcap 'cap_net_raw,cap_net_admin+eip' ble2homed` |
 | Устройства не найдены | Проверьте что адаптер работает: `sudo hcitool lescan` |
 | Не подключается к MQTT | Проверьте адрес брокера, логин и пароль, доступность порта 1883 |
-| Низкая скорость сканирования | Установите `scan_timeout: "3s"` в конфигурации |
+| Высокая загрузка CPU | Установите `ble.scan_interval: 20`, `ble.restart_pause: 40`, `history.enabled: false` |
+| Низкая скорость сканирования | Установите `ble.scan_interval: 0`, `ble.restart_pause: 0` |
 
 
 ## 📋 Требования
