@@ -165,7 +165,7 @@ func run(ctx context.Context, cfg *types.Config) error {
 		}
 
 		// Парсим данные
-		parsed := parser.ParseBLEData(adv)
+		parsed := parser.ParseBLEData(adv, &cfg.BLE)
 
 		log.Debug().
 			Str("mac", adv.Addr).

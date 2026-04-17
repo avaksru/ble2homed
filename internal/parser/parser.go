@@ -30,17 +30,16 @@ const (
 )
 
 // ParseBLEData — полный парсинг BLE advertising данных
-func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
-	result := make(map[string]types.ParsedValue)
+func ParseBLEData(adv types.Advertisement, cfg *types.BLEConfig) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue, 8)
 	now := time.Now()
 
 	// Парсинг manufacturer specific data
 	if len(adv.Manufacturer) >= 2 {
 		companyID := binary.LittleEndian.Uint16(adv.Manufacturer[0:2])
-		companyHex := fmt.Sprintf("%04X", companyID)
 
 		// HomeAssistant/Puck.js JSON5 парсинг
-		if int(companyID) == CompanyHomeAssistant && len(adv.Manufacturer) > 2 {
+		if !cfg.DisableJSONParsing && int(companyID) == CompanyHomeAssistant && len(adv.Manufacturer) > 2 {
 			parsed := parseHomeAssistantJSON(adv.Manufacturer[2:], now)
 			for k, v := range parsed {
 				result[k] = v
@@ -56,11 +55,17 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 		}
 
 		// Сохраняем raw manufacturer data
-		result["manufacturer/"+companyHex] = types.ParsedValue{
-			Value:     hex.EncodeToString(adv.Manufacturer),
-			Type:      "manufacturer",
-			Source:    "manufacturer",
-			Timestamp: now,
+		if !cfg.DisableManufacturerRaw {
+			var buf [4]byte
+			hex.Encode(buf[:], adv.Manufacturer[0:2])
+			companyHex := string(buf[:])
+
+			result["manufacturer/"+companyHex] = types.ParsedValue{
+				Value:     hex.EncodeToString(adv.Manufacturer),
+				Type:      "manufacturer",
+				Source:    "manufacturer",
+				Timestamp: now,
+			}
 		}
 	}
 
@@ -175,16 +180,20 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	}
 
 	// Попытка распознать Eddystone
-	if eddystone := parseEddystone(adv); len(eddystone) > 0 {
-		for k, v := range eddystone {
-			result[k] = v
+	if !cfg.DisableEddystone {
+		if eddystone := parseEddystone(adv); len(eddystone) > 0 {
+			for k, v := range eddystone {
+				result[k] = v
+			}
 		}
 	}
 
 	// Попытка распознать iBeacon
-	if ibeacon := parseIBeacon(adv); len(ibeacon) > 0 {
-		for k, v := range ibeacon {
-			result[k] = v
+	if !cfg.DisableIBeacon {
+		if ibeacon := parseIBeacon(adv); len(ibeacon) > 0 {
+			for k, v := range ibeacon {
+				result[k] = v
+			}
 		}
 	}
 

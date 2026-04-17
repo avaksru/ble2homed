@@ -76,6 +76,12 @@ type BLEConfig struct {
 	RestartPause int      `yaml:"restart_pause" json:"restart_pause"`   // пауза между циклами сканирования (секунды)
 	FilterMACs   []string `yaml:"filter_macs" json:"filter_macs"`
 	Connect      bool     `yaml:"connect" json:"connect"` // Подключаться для GATT операций
+
+	// Оптимизации производительности
+	DisableEddystone        bool `yaml:"disable_eddystone" json:"disable_eddystone"`
+	DisableIBeacon          bool `yaml:"disable_ibeacon" json:"disable_ibeacon"`
+	DisableJSONParsing      bool `yaml:"disable_json_parsing" json:"disable_json_parsing"`
+	DisableManufacturerRaw  bool `yaml:"disable_manufacturer_raw" json:"disable_manufacturer_raw"`
 }
 
 // PublishConfig — настройки публикации
