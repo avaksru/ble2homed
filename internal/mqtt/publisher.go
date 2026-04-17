@@ -46,7 +46,7 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger, v
 	zerolog.TimeFieldFormat = time.RFC3339
 	zerolog.SetGlobalLevel(getLogLevel(config.Log.Level))
 
-	return &Publisher{
+	publisher := &Publisher{
 		client:             client,
 		config:             config,
 		logger:             logger.With().Str("component", "publisher").Logger(),
@@ -57,6 +57,13 @@ func NewPublisher(client *Client, config *types.Config, logger zerolog.Logger, v
 		version:            version,
 		permitJoin:         !config.OnlyKnownDevices,
 	}
+
+	// ✅ Загружаем все устройства из базы данных ОДИН РАЗ при старте
+	if err := publisher.loadKnownDevicesFromDatabase(); err != nil {
+		publisher.logger.Warn().Err(err).Msg("Failed to load known devices from database at startup")
+	}
+
+	return publisher
 }
 
 func getLogLevel(level string) zerolog.Level {
@@ -295,13 +302,46 @@ func (p *Publisher) saveKnownDeviceToDatabase(device *types.Device, knownDevice 
 	updated := false
 	for i, existing := range db.Devices {
 		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
-			db.Devices[i].Name = name
-			db.Devices[i].Active = device.IsOnline()
-			db.Devices[i].Cloud = knownDevice.HOMEdCloud
-			db.Devices[i].Discovery = knownDevice.HOMEdDiscovery
-			db.Devices[i].Real = real
-			db.Devices[i].Exposes = exposes
-			updated = true
+			// Обновляем только изменяемые поля
+			if db.Devices[i].Name != name {
+				db.Devices[i].Name = name
+				updated = true
+			}
+			
+			if db.Devices[i].Active != device.IsOnline() {
+				db.Devices[i].Active = device.IsOnline()
+				updated = true
+			}
+			
+			if db.Devices[i].Cloud != knownDevice.HOMEdCloud {
+				db.Devices[i].Cloud = knownDevice.HOMEdCloud
+				updated = true
+			}
+			
+			if db.Devices[i].Discovery != knownDevice.HOMEdDiscovery {
+				db.Devices[i].Discovery = knownDevice.HOMEdDiscovery
+				updated = true
+			}
+			
+			if db.Devices[i].Real != real {
+				db.Devices[i].Real = real
+				updated = true
+			}
+			
+			// ✅ НИКОГДА НЕ УДАЛЯЕМ СУЩЕСТВУЮЩИЕ EXPOSES
+			// Добавляем только новые, которых еще нет в списке
+			existingExposes := make(map[string]bool)
+			for _, exp := range existing.Exposes {
+				existingExposes[exp] = true
+			}
+			
+			for _, newExp := range exposes {
+				if !existingExposes[newExp] {
+					db.Devices[i].Exposes = append(db.Devices[i].Exposes, newExp)
+					updated = true
+				}
+			}
+			
 			break
 		}
 	}
@@ -524,10 +564,31 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 	updated := false
 	for i, existing := range db.Devices {
 		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
-			db.Devices[i].Active = device.IsOnline()
-			db.Devices[i].Name = name
-			db.Devices[i].Exposes = exposes
-			updated = true
+			// Обновляем только изменяемые поля
+			if db.Devices[i].Active != device.IsOnline() {
+				db.Devices[i].Active = device.IsOnline()
+				updated = true
+			}
+			
+			if db.Devices[i].Name != name {
+				db.Devices[i].Name = name
+				updated = true
+			}
+			
+			// ✅ НИКОГДА НЕ УДАЛЯЕМ СУЩЕСТВУЮЩИЕ EXPOSES
+			// Добавляем только новые, которых еще нет в списке
+			existingExposes := make(map[string]bool)
+			for _, exp := range existing.Exposes {
+				existingExposes[exp] = true
+			}
+			
+			for _, newExp := range exposes {
+				if !existingExposes[newExp] {
+					db.Devices[i].Exposes = append(db.Devices[i].Exposes, newExp)
+					updated = true
+				}
+			}
+			
 			break
 		}
 	}
