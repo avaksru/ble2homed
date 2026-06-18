@@ -727,6 +727,12 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	// Обновляем распарсенные значения
 	for key, val := range parsed {
 		device.SetParsedValue(key, val)
+		// Сохраняем battery в device.Battery для GetFDFlat()
+		if key == "battery" {
+			if b, ok := val.Value.(int); ok {
+				device.Battery = &b
+			}
+		}
 	}
 
 	// Логируем распарсенные полезные данные

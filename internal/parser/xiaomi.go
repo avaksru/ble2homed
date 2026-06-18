@@ -191,13 +191,6 @@ func (p *XiaomiParser) parse(data []byte, now time.Time) map[string]types.Parsed
 		}
 	}
 	
-	// Add frame counter
-	result["frame_counter"] = types.ParsedValue{Value: int(frameCounter), Type: "frame_counter", Source: "Xiaomi", Timestamp: now}
-	
-	if macAddress != "" {
-		result["mac"] = types.ParsedValue{Value: macAddress, Type: "mac", Source: "Xiaomi", Timestamp: now}
-	}
-	
 	return result
 }
 
