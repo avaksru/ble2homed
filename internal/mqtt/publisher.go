@@ -808,9 +808,8 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 	return nil
 }
 
-// publishExpose — публикация expose для HOMEd
+// publishExpose — публикация expose для HOMEd (только один раз)
 func (p *Publisher) publishExpose(mac string, device *types.Device) error {
-	// ✅ Публикуем только ОДИН РАЗ после первого обнаружения
 	device.Mu.RLock()
 	alreadyPublished := device.ExposePublished
 	device.Mu.RUnlock()
@@ -821,7 +820,6 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 
 	// Публикуем только если есть полезные сенсорные данные
 	hasUsefulData := false
-
 	parsedValues := device.GetParsedValues()
 	for key := range parsedValues {
 		switch key {
@@ -832,7 +830,6 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	}
 
 	if !hasUsefulData {
-		// Нет полезных данных - пропускаем публикацию expose
 		return nil
 	}
 
@@ -842,7 +839,7 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	// Получаем expose данные
 	homedExpose := device.GetHomedExpose()
 
-	// Публикуем expose
+	// Публикуем expose (с retain=true)
 	exposeBytes, err := json.Marshal(homedExpose)
 	if err != nil {
 		return err
@@ -852,15 +849,114 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	err = p.client.PublishJSON(topic, exposeBytes, true)
 
 	if err == nil {
-		// Устанавливаем флаг что опубликовали успешно
 		device.Mu.Lock()
 		device.ExposePublished = true
 		device.Mu.Unlock()
-
-		p.logger.Debug().Str("mac", mac).Msg("Expose published once, will not publish again")
+		p.logger.Debug().Str("mac", mac).Msg("Expose published once")
 	}
 
 	return err
+}
+
+// PublishStartupExpose — публикация expose на старте из базы данных
+func (p *Publisher) PublishStartupExpose(mac string) error {
+	db, err := p.loadDeviceDatabase()
+	if err != nil {
+		return err
+	}
+
+	normalizedID := types.NormalizeMACForTopic(mac)
+	if normalizedID == "" {
+		normalizedID = mac
+	}
+
+	// Ищем устройство в базе данных
+	var dbEntry *dbDevice
+	for _, entry := range db.Devices {
+		if types.NormalizeMACForTopic(entry.ID) == normalizedID {
+			dbEntry = &entry
+			break
+		}
+	}
+
+	if dbEntry == nil {
+		return nil // Устройства нет в БД, expose будет опубликован при первом обнаружении
+	}
+
+	exposes := dbEntry.Exposes
+	if len(exposes) == 0 {
+		return nil // Нет exposes для публикации
+	}
+
+	// Добавляем "last" если его нет
+	hasLast := false
+	for _, e := range exposes {
+		if e == "last" {
+			hasLast = true
+			break
+		}
+	}
+	if !hasLast {
+		exposes = append(exposes, "last")
+	}
+
+	// Строим expose из данных базы
+	items := make([]string, 0, len(exposes))
+	options := make(map[string]types.ExposeOption, len(exposes))
+
+	for _, item := range exposes {
+		if item == "last" {
+			items = append(items, "last")
+			continue
+		}
+
+		items = append(items, item)
+
+		unit := ""
+		class := ""
+		switch item {
+		case "temperature":
+			unit = "°C"
+		case "humidity":
+			unit = "%"
+		case "battery":
+			unit = "%"
+		case "voltage":
+			unit = "V"
+		case "pressure":
+			unit = "hPa"
+		case "illuminance":
+			unit = "lx"
+		case "rssi":
+			unit = "dBm"
+		}
+
+		options[item] = types.ExposeOption{
+			Class: class,
+			State: "measurement",
+			Type:  "sensor",
+			Unit:  unit,
+		}
+	}
+
+	expose := types.HomedExpose{
+		Common: types.ExposeCommon{
+			Items:   items,
+			Options: options,
+		},
+		Last: time.Now().Unix(),
+	}
+
+	base := p.config.MQTTPrefix
+	topicName := p.config.GetDeviceTopicName(mac)
+
+	exposeBytes, err := json.Marshal(expose)
+	if err != nil {
+		return err
+	}
+
+	topic := fmt.Sprintf("%s/expose/ble/%s", base, topicName)
+	return p.client.PublishJSON(topic, exposeBytes, true)
 }
 
 // publishDeviceOffline — публикация offline статуса устройства

@@ -162,11 +162,20 @@ func run(ctx context.Context, cfg *types.Config) error {
 		}
 	})
 
-	// Подключаемся к MQTT с повторными попытками
+	// Подключаемся к MQTT с повторными попятками
 	if err := connectWithRetry(ctx, mqttClient, 20*time.Second); err != nil {
 		return fmt.Errorf("failed to connect to MQTT after retries: %w", err)
 	}
 	defer mqttClient.Disconnect()
+
+	// Публикуем expose на старте для всех известных устройств из базы данных
+	for mac := range cfg.KnownDevices {
+		if err := publisher.PublishStartupExpose(mac); err != nil {
+			log.Warn().Err(err).Str("mac", mac).Msg("Failed to publish startup expose")
+		} else {
+			log.Debug().Str("mac", mac).Msg("Startup expose published from database")
+		}
+	}
 
 	// 6. Создаем BLE сканер
 	scanner, err := ble.NewScanner(&cfg.BLE, log.Logger)

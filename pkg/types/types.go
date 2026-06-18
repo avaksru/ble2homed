@@ -126,8 +126,8 @@ type Device struct {
 
 	// Внутренние поля
 	Mu sync.RWMutex `json:"-"`
-	
-	// Флаг что expose уже был опубликован один раз
+
+	// Флаг что expose уже был опубликован один раз (только для runtime)
 	ExposePublished bool `json:"-"`
 }
 
