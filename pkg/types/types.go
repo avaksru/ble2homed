@@ -313,29 +313,19 @@ func (d *Device) GetExposeList() []DeviceExpose {
 	d.Mu.RLock()
 	defer d.Mu.RUnlock()
 
-	exposes := []DeviceExpose{
-		{
-			Type:     "sensor",
-			Name:     "RSSI",
-			Property: "rssi",
-			Unit:     "dBm",
-		},
-	}
-
-	if d.Battery != nil {
-		exposes = append(exposes, DeviceExpose{
-			Type:     "sensor",
-			Name:     "Battery",
-			Property: "battery",
-			Unit:     "%",
-			Min:      floatPtr(0),
-			Max:      floatPtr(100),
-		})
-	}
-
 	// Фиксированный порядок полей (чтобы набор exposes не менялся местами)
 	exposeOrder := []string{"temp", "humidity", "battery", "voltage", "pressure", "illuminance"}
 	
+	exposes := make([]DeviceExpose, 0, 1+len(exposeOrder))
+	
+	// RSSI всегда первый
+	exposes = append(exposes, DeviceExpose{
+		Type:     "sensor",
+		Name:     "RSSI",
+		Property: "rssi",
+		Unit:     "dBm",
+	})
+
 	for _, key := range exposeOrder {
 		if val, ok := d.ParsedValues[key]; ok {
 			expose := DeviceExpose{
@@ -354,6 +344,13 @@ func (d *Device) GetExposeList() []DeviceExpose {
 				}
 			case "humidity":
 				expose.Name = "Humidity"
+				if expose.Unit == "" {
+					expose.Unit = "%"
+				}
+				expose.Min = floatPtr(0)
+				expose.Max = floatPtr(100)
+			case "battery":
+				expose.Name = "Battery"
 				if expose.Unit == "" {
 					expose.Unit = "%"
 				}
