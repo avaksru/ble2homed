@@ -29,7 +29,7 @@ const (
 	XiaomiEventTempHumidity   = 0x100d // 4109 - Temperature and humidity combined
 	XiaomiEventTemperature    = 0x1004 // 4100 - Temperature
 	XiaomiEventHumidity       = 0x1006 // 4102 - Humidity
-	XiaomiEventBattery        = 0x1008 // 4106 - Battery
+	XiaomiEventBattery        = 0x100a // 4106 - Battery
 	XiaomiEventIlluminance    = 0x1007 // 4103 - Illuminance
 	XiaomiEventMoisture       = 0x1008 // 4104 - Moisture
 	XiaomiEventFertility      = 0x1009 // 4105 - Fertility

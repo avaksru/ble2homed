@@ -754,18 +754,7 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		logEvent.Msg("Device sensor data parsed")
 	}
 
-	// Публикуем в HOMEd стиле
-	if err := p.publishHomed(mac, adv, parsed, device); err != nil {
-		return err
-	}
-
-	// Публикуем expose для HOMEd
-	if err := p.publishExpose(mac, device); err != nil {
-		return err
-	}
-
-	// ✅ Всегда обновляем exposes в БД при получении новых данных от датчика
-	// Новые устройства добавляются только при permitJoin=true
+	// ✅ Сначала обновляем exposes в БД, чтобы expose публиковался с полным набором
 	newEntry, err := p.updateDeviceDatabase(device)
 	if err != nil {
 		p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to update device in database")
@@ -773,6 +762,16 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		p.PublishBleStatusNow()
 	} else {
 		p.PublishBleStatusIfChanged()
+	}
+
+	// Публикуем в HOMEd стиле
+	if err := p.publishHomed(mac, adv, parsed, device); err != nil {
+		return err
+	}
+
+	// Публикуем expose для HOMEd (после обновления БД, чтобы набор полей был полным)
+	if err := p.publishExpose(mac, device); err != nil {
+		return err
 	}
 
 	return nil
@@ -811,14 +810,35 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 // lastExposeHash — кэш хэшей последних опубликованных expose для каждого MAC
 var lastExposeHash sync.Map
 
-// publishExpose — публикация expose для HOMEd (публикуется повторно при появлении новых полей)
+// publishExpose — публикация expose для HOMEd (публикуется только при изменении набора полей в БД)
 func (p *Publisher) publishExpose(mac string, device *types.Device) error {
-	// Получаем expose данные
-	homedExpose := device.GetHomedExpose()
+	// Всегда берем exposes из базы данных, чтобы набор полей был стабильным
+	// и не менялся при получении частичных BLE пакетов
+	db, err := p.loadDeviceDatabase()
+	if err != nil {
+		return err
+	}
+
+	normalizedID := types.NormalizeMACForTopic(mac)
+	if normalizedID == "" {
+		normalizedID = mac
+	}
+
+	var dbEntry *dbDevice
+	for _, entry := range db.Devices {
+		if types.NormalizeMACForTopic(entry.ID) == normalizedID {
+			dbEntry = &entry
+			break
+		}
+	}
+
+	if dbEntry == nil || len(dbEntry.Exposes) == 0 {
+		return nil
+	}
 
 	// Собираем только sensor поля (без "last")
 	sensorItems := make([]string, 0)
-	for _, item := range homedExpose.Common.Items {
+	for _, item := range dbEntry.Exposes {
 		if item != "last" && item != "rssi" {
 			sensorItems = append(sensorItems, item)
 		}
@@ -838,10 +858,54 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 		return nil // Набор полей не изменился — пропускаем
 	}
 
+	// Строим expose из данных базы
+	items := make([]string, 0, len(dbEntry.Exposes))
+	options := make(map[string]types.ExposeOption, len(dbEntry.Exposes))
+
+	for _, item := range dbEntry.Exposes {
+		if item == "last" {
+			items = append(items, "last")
+			continue
+		}
+		items = append(items, item)
+
+		unit := ""
+		switch item {
+		case "temperature":
+			unit = "°C"
+		case "humidity":
+			unit = "%"
+		case "battery":
+			unit = "%"
+		case "voltage":
+			unit = "V"
+		case "pressure":
+			unit = "hPa"
+		case "illuminance":
+			unit = "lx"
+		case "rssi":
+			unit = "dBm"
+		}
+
+		options[item] = types.ExposeOption{
+			State: "measurement",
+			Type:  "sensor",
+			Unit:  unit,
+		}
+	}
+
+	expose := types.HomedExpose{
+		Common: types.ExposeCommon{
+			Items:   items,
+			Options: options,
+		},
+		Last: time.Now().Unix(),
+	}
+
 	base := p.config.MQTTPrefix
 	topicName := p.config.GetDeviceTopicName(mac)
 
-	exposeBytes, err := json.Marshal(homedExpose)
+	exposeBytes, err := json.Marshal(expose)
 	if err != nil {
 		return err
 	}
@@ -851,7 +915,7 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 
 	if err == nil {
 		lastExposeHash.Store(mac, currentHash)
-		p.logger.Debug().Str("mac", mac).Strs("items", sensorItems).Msg("Expose published")
+		p.logger.Debug().Str("mac", mac).Strs("items", sensorItems).Msg("Expose published from database")
 	}
 
 	return err
