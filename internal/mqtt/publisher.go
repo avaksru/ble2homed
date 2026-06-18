@@ -808,38 +808,39 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 	return nil
 }
 
-// publishExpose — публикация expose для HOMEd (только один раз)
+// lastExposeHash — кэш хэшей последних опубликованных expose для каждого MAC
+var lastExposeHash sync.Map
+
+// publishExpose — публикация expose для HOMEd (публикуется повторно при появлении новых полей)
 func (p *Publisher) publishExpose(mac string, device *types.Device) error {
-	device.Mu.RLock()
-	alreadyPublished := device.ExposePublished
-	device.Mu.RUnlock()
+	// Получаем expose данные
+	homedExpose := device.GetHomedExpose()
 
-	if alreadyPublished {
-		return nil
-	}
-
-	// Публикуем только если есть полезные сенсорные данные
-	hasUsefulData := false
-	parsedValues := device.GetParsedValues()
-	for key := range parsedValues {
-		switch key {
-		case "temp", "humidity", "battery", "pressure", "illuminance":
-			hasUsefulData = true
-			break
+	// Собираем только sensor поля (без "last")
+	sensorItems := make([]string, 0)
+	for _, item := range homedExpose.Common.Items {
+		if item != "last" && item != "rssi" {
+			sensorItems = append(sensorItems, item)
 		}
 	}
 
-	if !hasUsefulData {
+	// Если нет сенсорных полей — не публикуем
+	if len(sensorItems) == 0 {
 		return nil
+	}
+
+	// Проверяем, изменился ли набор exposes с прошлого раза
+	currentHash := fmt.Sprintf("%v", sensorItems)
+	lastHashObj, _ := lastExposeHash.LoadOrStore(mac, "")
+	lastHash, _ := lastHashObj.(string)
+
+	if currentHash == lastHash {
+		return nil // Набор полей не изменился — пропускаем
 	}
 
 	base := p.config.MQTTPrefix
 	topicName := p.config.GetDeviceTopicName(mac)
 
-	// Получаем expose данные
-	homedExpose := device.GetHomedExpose()
-
-	// Публикуем expose (с retain=true)
 	exposeBytes, err := json.Marshal(homedExpose)
 	if err != nil {
 		return err
@@ -849,10 +850,8 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	err = p.client.PublishJSON(topic, exposeBytes, true)
 
 	if err == nil {
-		device.Mu.Lock()
-		device.ExposePublished = true
-		device.Mu.Unlock()
-		p.logger.Debug().Str("mac", mac).Msg("Expose published once")
+		lastExposeHash.Store(mac, currentHash)
+		p.logger.Debug().Str("mac", mac).Strs("items", sensorItems).Msg("Expose published")
 	}
 
 	return err
@@ -956,7 +955,21 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 	}
 
 	topic := fmt.Sprintf("%s/expose/ble/%s", base, topicName)
-	return p.client.PublishJSON(topic, exposeBytes, true)
+	if err := p.client.PublishJSON(topic, exposeBytes, true); err != nil {
+		return err
+	}
+
+	// Инициализируем хэш expose, чтобы runtime publishExpose() не перезаписал
+	// полный expose из БД частичными данными от первого BLE пакета
+	sensorItems := make([]string, 0)
+	for _, item := range exposes {
+		if item != "last" && item != "rssi" {
+			sensorItems = append(sensorItems, item)
+		}
+	}
+	lastExposeHash.Store(mac, fmt.Sprintf("%v", sensorItems))
+
+	return nil
 }
 
 // publishDeviceOffline — публикация offline статуса устройства
@@ -997,8 +1010,6 @@ func (p *Publisher) publishBleStatus(force bool) (bool, error) {
 			continue // На случай если порядок рассинхронизирован с картой
 		}
 
-		device, deviceExists := p.devices[mac]
-
 		statusDevice := types.BleStatusDevice{
 			Active:    true,
 			Cloud:     knownDevice.HOMEdCloud,
@@ -1008,22 +1019,15 @@ func (p *Publisher) publishBleStatus(force bool) (bool, error) {
 			Real:      true,
 		}
 
-		// Получаем expose для устройств
-		if deviceExists {
-			homedExpose := device.GetHomedExpose()
-			statusDevice.Exposes = homedExpose.Common.Items
-			statusDevice.Options = homedExpose.Common.Options
-			statusDevice.Last = homedExpose.Last
-		} else {
-			// Если устройства нет в памяти - берем exposes из базы данных
-			db, err := p.loadDeviceDatabase()
-			if err == nil {
-				for _, dbDevice := range db.Devices {
-					if types.NormalizeMACForTopic(dbDevice.ID) == mac {
-						statusDevice.Exposes = dbDevice.Exposes
-						statusDevice.Last = 0
-						break
-					}
+		// Всегда берем exposes из базы данных, чтобы набор полей был стабильным
+		// и не менялся при получении частичных BLE пакетов
+		db, err := p.loadDeviceDatabase()
+		if err == nil {
+			for _, dbDevice := range db.Devices {
+				if types.NormalizeMACForTopic(dbDevice.ID) == mac {
+					statusDevice.Exposes = dbDevice.Exposes
+					statusDevice.Last = 0
+					break
 				}
 			}
 		}
