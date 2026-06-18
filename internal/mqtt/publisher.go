@@ -271,13 +271,16 @@ func (p *Publisher) UpdateDevice(identifier string, data map[string]interface{})
 }
 
 func (p *Publisher) saveKnownDeviceToDatabase(device *types.Device, knownDevice types.KnownDevice, data map[string]interface{}) error {
+	p.dbMu.Lock()
+	defer p.dbMu.Unlock()
+
 	db, err := p.loadDeviceDatabase()
 	if err != nil {
 		return err
 	}
 
-	p.dbMu.Lock()
-	defer p.dbMu.Unlock()
+	// Дедупликация при загрузке - на случай если в базе уже есть дубликаты
+	db.Devices = p.deduplicateDevices(db.Devices)
 
 	normalizedID := types.NormalizeMACForTopic(device.MAC)
 	if normalizedID == "" {
@@ -453,6 +456,9 @@ func (p *Publisher) loadKnownDevicesFromDatabase() error {
 		return nil
 	}
 
+	// Дедупликация устройств из базы данных перед загрузкой
+	db.Devices = p.deduplicateDevices(db.Devices)
+
 	knownDevices := make(map[string]types.KnownDevice, len(db.Devices))
 	order := make([]string, 0, len(db.Devices))
 
@@ -536,18 +542,46 @@ func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
 	return false
 }
 
+// deduplicateDevices — удаление дубликатов устройств по MAC-адресу
+// Оставляет только первую запись для каждого уникального MAC
+func (p *Publisher) deduplicateDevices(devices []dbDevice) []dbDevice {
+	seen := make(map[string]bool)
+	result := make([]dbDevice, 0, len(devices))
+	
+	for _, device := range devices {
+		normalizedID := types.NormalizeMACForTopic(device.ID)
+		if normalizedID == "" {
+			continue
+		}
+		
+		if !seen[normalizedID] {
+			seen[normalizedID] = true
+			result = append(result, device)
+		} else {
+			p.logger.Debug().
+				Str("mac", normalizedID).
+				Msg("Removing duplicate device from database")
+		}
+	}
+	
+	return result
+}
+
 func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 	if !p.hasUsefulDeviceData(device) {
 		return false, nil
 	}
+
+	p.dbMu.Lock()
+	defer p.dbMu.Unlock()
 
 	db, err := p.loadDeviceDatabase()
 	if err != nil {
 		return false, err
 	}
 
-	p.dbMu.Lock()
-	defer p.dbMu.Unlock()
+	// Дедупликация при загрузке - на случай если в базе уже есть дубликаты
+	db.Devices = p.deduplicateDevices(db.Devices)
 
 	normalizedID := types.NormalizeMACForTopic(device.MAC)
 	if normalizedID == "" {
@@ -716,17 +750,6 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	if err := p.publishExpose(mac, device); err != nil {
 		return err
 	}
-
-	if p.IsPermitJoin() {
-		newEntry, err := p.updateDeviceDatabase(device)
-		if err != nil {
-			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to save device into database")
-		} else if newEntry {
-			p.PublishBleStatusNow()
-		}
-	}
-
-	return nil
 
 	if p.IsPermitJoin() {
 		newEntry, err := p.updateDeviceDatabase(device)
