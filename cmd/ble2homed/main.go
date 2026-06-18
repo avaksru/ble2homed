@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/avaksru/ble2homed/pkg/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
@@ -47,7 +49,7 @@ func main() {
 	}
 
 	// Настройка логирования
-	setupLogger(cfg.Log.Level)
+	setupLogger(cfg.Log)
 
 	log.Info().
 		Str("version", version).
@@ -70,10 +72,10 @@ func main() {
 }
 
 // setupLogger — настройка zerolog
-func setupLogger(level string) {
+func setupLogger(logConfig types.LogConfig) {
 	zerolog.TimeFieldFormat = time.RFC3339
 
-	switch level {
+	switch logConfig.Level {
 	case "debug":
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	case "info":
@@ -86,8 +88,26 @@ func setupLogger(level string) {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
+	var writers []io.Writer
+
 	// Красивый вывод в консоль
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	writers = append(writers, zerolog.ConsoleWriter{Out: os.Stderr})
+
+	// Вывод в файл, если указан путь
+	if logConfig.FilePath != "" {
+		fileWriter := &lumberjack.Logger{
+			Filename:   logConfig.FilePath,
+			MaxSize:    logConfig.MaxSize,    // MB
+			MaxBackups: logConfig.MaxBackups, // количество бэкапов
+			MaxAge:     logConfig.MaxAge,     // дней
+			Compress:   logConfig.Compress,   // сжимать
+		}
+		writers = append(writers, fileWriter)
+	}
+
+	// Множественный вывод
+	multi := zerolog.MultiLevelWriter(writers...)
+	log.Logger = log.Output(multi)
 }
 
 // run — основная логика приложения

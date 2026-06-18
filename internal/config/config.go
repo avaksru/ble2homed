@@ -30,7 +30,7 @@ func DefaultConfig() *types.Config {
 		},
 		OnlyKnownDevices: true,
 		History: types.HistoryConfig{
-			Enabled:   true,
+			Enabled:   false,
 			Intervals: []string{"1m", "10m", "1h", "24h", "7d"},
 		},
 		DatabasePath: "/opt/homed-ble/database.json",
@@ -39,7 +39,12 @@ func DefaultConfig() *types.Config {
 			Port:    8090,
 		},
 		Log: types.LogConfig{
-			Level: "info",
+			Level:      "info",
+			FilePath:   "",
+			MaxSize:    100,
+			MaxBackups: 3,
+			MaxAge:     28,
+			Compress:   true,
 		},
 	}
 }

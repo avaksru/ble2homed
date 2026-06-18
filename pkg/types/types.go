@@ -104,7 +104,12 @@ type WebConfig struct {
 
 // LogConfig — настройки логирования
 type LogConfig struct {
-	Level string `yaml:"level" json:"level"` // debug, info, warn, error
+	Level      string `yaml:"level" json:"level"`           // debug, info, warn, error
+	FilePath   string `yaml:"file_path" json:"file_path"`   // путь к файлу логов (пусто = только консоль)
+	MaxSize    int    `yaml:"max_size" json:"max_size"`     // максимальный размер файла в МБ
+	MaxBackups int    `yaml:"max_backups" json:"max_backups"` // количество бэкапов
+	MaxAge     int    `yaml:"max_age" json:"max_age"`       // максимальный возраст файла в днях
+	Compress   bool   `yaml:"compress" json:"compress"`     // сжимать старые логи
 }
 
 // Device — информация об устройстве
