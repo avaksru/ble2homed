@@ -588,22 +588,53 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 		normalizedID = device.MAC
 	}
 
-	// ✅ Если устройство с таким ID уже есть в базе - НЕ добавляем и НЕ обновляем никакие поля
-	for _, existing := range db.Devices {
+	exposes := device.GetHomedExpose().Common.Items
+
+	// 🔄 Если устройство уже есть в БД — обновляем только exposes (добавляем новые)
+	for i, existing := range db.Devices {
 		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
-			p.logger.Debug().
-				Str("mac", normalizedID).
-				Msg("Device already exists in database, skipping update")
+			existingExposes := make(map[string]bool)
+			for _, exp := range existing.Exposes {
+				existingExposes[exp] = true
+			}
+
+			updated := false
+			for _, newExp := range exposes {
+				if !existingExposes[newExp] {
+					db.Devices[i].Exposes = append(db.Devices[i].Exposes, newExp)
+					updated = true
+				}
+			}
+
+			if updated {
+				db.Timestamp = time.Now().Unix()
+				db.Version = p.version
+				if err := p.saveDeviceDatabase(db); err != nil {
+					return false, err
+				}
+				p.logger.Debug().
+					Str("mac", normalizedID).
+					Msg("Updated exposes in database")
+			} else {
+				p.logger.Debug().
+					Str("mac", normalizedID).
+					Msg("Device already exists in database, exposes up to date")
+			}
 			return false, nil
 		}
+	}
+
+	// Устройство не найдено в БД — добавляем, если permitJoin включён
+	// или устройство уже есть в known_devices (известное устройство)
+	_, isKnown := p.config.KnownDevices[normalizedID]
+	if !p.IsPermitJoin() && !isKnown {
+		return false, nil
 	}
 
 	name := device.Name
 	if name == "" {
 		name = normalizedID
 	}
-
-	exposes := device.GetHomedExpose().Common.Items
 
 	// Добавляем новое устройство в базу
 	db.Devices = append(db.Devices, dbDevice{
@@ -727,13 +758,15 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		return err
 	}
 
-	if p.IsPermitJoin() {
-		newEntry, err := p.updateDeviceDatabase(device)
-		if err != nil {
-			p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to save device into database")
-		} else if newEntry {
-			p.PublishBleStatusNow()
-		}
+	// ✅ Всегда обновляем exposes в БД при получении новых данных от датчика
+	// Новые устройства добавляются только при permitJoin=true
+	newEntry, err := p.updateDeviceDatabase(device)
+	if err != nil {
+		p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to update device in database")
+	} else if newEntry {
+		p.PublishBleStatusNow()
+	} else {
+		p.PublishBleStatusIfChanged()
 	}
 
 	return nil
