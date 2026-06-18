@@ -184,8 +184,14 @@ func run(ctx context.Context, cfg *types.Config) error {
 			return
 		}
 
-		// Парсим данные
-		parsed := parser.ParseBLEData(adv, &cfg.BLE)
+		// Парсим данные с поддержкой bindkey для Xiaomi устройств
+		parsed := parser.ParseBLEDataWithBindKey(adv, &cfg.BLE, func(mac string) string {
+			normalizedMAC := types.NormalizeMACForTopic(mac)
+			if device, exists := cfg.KnownDevices[normalizedMAC]; exists {
+				return device.BindKey
+			}
+			return ""
+		})
 
 		log.Debug().
 			Str("mac", adv.Addr).

@@ -29,8 +29,16 @@ const (
 	CompanyATC = 0x0001
 )
 
+// BindKeyLookup — функция для получения bindkey по MAC-адресу
+type BindKeyLookup func(mac string) string
+
 // ParseBLEData — полный парсинг BLE advertising данных
 func ParseBLEData(adv types.Advertisement, cfg *types.BLEConfig) map[string]types.ParsedValue {
+	return ParseBLEDataWithBindKey(adv, cfg, nil)
+}
+
+// ParseBLEDataWithBindKey — полный парсинг BLE advertising данных с поддержкой bindkey
+func ParseBLEDataWithBindKey(adv types.Advertisement, cfg *types.BLEConfig, bindKeyLookup BindKeyLookup) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue, 8)
 	now := time.Now()
 
@@ -95,16 +103,19 @@ func ParseBLEData(adv types.Advertisement, cfg *types.BLEConfig) map[string]type
 			}
 		}
 
-		// ✅ Xiaomi MIJIA FE95
-		if strings.Contains(uuid, "FE95") && len(sd.Data) == 18 {
-			tempRaw := int16(binary.LittleEndian.Uint16(sd.Data[14:16]))
-			humidityRaw := binary.LittleEndian.Uint16(sd.Data[16:18])
+		// ✅ Xiaomi MIJIA FE95 (LYWSD02, LYWSD03MMC и другие)
+		if strings.Contains(uuid, "FE95") && len(sd.Data) >= 5 {
+			// Получаем bindkey для этого устройства, если доступен
+			var bindKey string
+			if bindKeyLookup != nil {
+				bindKey = bindKeyLookup(adv.Addr)
+			}
 			
-			temp := float64(tempRaw) / 10.0
-			humidity := float64(humidityRaw) / 10.0
-
-			result["temp"] = types.ParsedValue{Value: temp, Unit: "°C", Type: "temp", Source: "Xiaomi MIJIA", Timestamp: now}
-			result["humidity"] = types.ParsedValue{Value: humidity, Unit: "%", Type: "humidity", Source: "Xiaomi MIJIA", Timestamp: now}
+			// Используем новый Xiaomi парсер с поддержкой шифрования
+			xiaomiParsed := ParseXiaomiServiceData(sd.Data, bindKey, now)
+			for k, v := range xiaomiParsed {
+				result[k] = v
+			}
 		}
 
 		// Известные сервисы
