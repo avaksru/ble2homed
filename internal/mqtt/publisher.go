@@ -707,12 +707,13 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		device.Name = adv.Name
 	}
 
-	// ✅ Всегда публикуем online статус при получении данных
-	// Это решает проблему когда после перезапуска брокера/сервиса статус остаётся offline
+	// ✅ Всегда публикуем online статус при получении данных (асинхронно, чтобы не блокировать BLE обработчик)
 	p.logger.Debug().Str("mac", mac).Msg("Publishing online status for active device")
-	if err := p.publishDeviceStatus(mac, "online", device.GetLastSeen()); err != nil {
-		p.logger.Error().Err(err).Str("mac", mac).Msg("Failed to publish online status")
-	}
+	go func(macAddr string, lastSeen time.Time) {
+		if err := p.publishDeviceStatus(macAddr, "online", lastSeen); err != nil {
+			p.logger.Error().Err(err).Str("mac", macAddr).Msg("Failed to publish online status")
+		}
+	}(mac, device.GetLastSeen())
 
 	// Сбрасываем флаг отправки оффлайн статуса когда устройство вернулось онлайн
 	p.mu.Lock()
@@ -764,10 +765,12 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 		p.PublishBleStatusIfChanged()
 	}
 
-	// Публикуем в HOMEd стиле
-	if err := p.publishHomed(mac, adv, parsed, device); err != nil {
-		return err
-	}
+	// Публикуем в HOMEd стиле (асинхронно, чтобы не блокировать BLE обработчик)
+	go func(macAddr string, advCopy types.Advertisement, parsedCopy map[string]types.ParsedValue, deviceCopy *types.Device) {
+		if err := p.publishHomed(macAddr, advCopy, parsedCopy, deviceCopy); err != nil {
+			p.logger.Error().Err(err).Str("mac", macAddr).Msg("Failed to publish advertisement")
+		}
+	}(mac, adv, parsed, device)
 
 	// Публикуем expose для HOMEd (после обновления БД, чтобы набор полей был полным)
 	if err := p.publishExpose(mac, device); err != nil {

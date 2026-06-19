@@ -202,21 +202,25 @@ s.publisher.PublishBleStatusNow()
 					return
 				}
 
-				fdData := device.GetFDFlat()
-				fdBytes, err := json.Marshal(fdData)
-				if err != nil {
-					s.logger.Error().Err(err).Str("device", deviceID).Msg("Failed to marshal device properties")
-					return
-				}
+				// Публикуем асинхронно, чтобы не блокировать MQTT обработчик
+				deviceCopy := device
+				go func() {
+					fdData := deviceCopy.GetFDFlat()
+					fdBytes, err := json.Marshal(fdData)
+					if err != nil {
+						s.logger.Error().Err(err).Str("device", deviceID).Msg("Failed to marshal device properties")
+						return
+					}
 
-				topicName := s.publisher.Config().GetDeviceTopicName(device.MAC)
-				fdTopic := fmt.Sprintf("%s/fd/ble/%s", s.publisher.Config().Publish.BasePrefix, topicName)
+					topicName := s.publisher.Config().GetDeviceTopicName(deviceCopy.MAC)
+					fdTopic := fmt.Sprintf("%s/fd/ble/%s", s.publisher.Config().Publish.BasePrefix, topicName)
 
-				if err := s.client.PublishJSON(fdTopic, fdBytes, false); err != nil {
-					s.logger.Error().Err(err).Str("topic", fdTopic).Msg("Failed to publish device properties")
-				} else {
-					s.logger.Debug().Str("topic", fdTopic).Msg("Device properties published successfully")
-				}
+					if err := s.client.PublishJSON(fdTopic, fdBytes, false); err != nil {
+						s.logger.Error().Err(err).Str("topic", fdTopic).Msg("Failed to publish device properties")
+					} else {
+						s.logger.Debug().Str("topic", fdTopic).Msg("Device properties published successfully")
+					}
+				}()
 
 				return
 
