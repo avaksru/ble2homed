@@ -1052,7 +1052,7 @@ func (p *Publisher) publishDeviceOffline(mac string, device *types.Device) error
 	}
 
 	payloadBytes, _ := json.Marshal(payload)
-	return p.client.PublishJSON(topic, payloadBytes, false)
+	return p.client.PublishJSON(topic, payloadBytes, true)
 }
 
 // publishBleStatus — публикация статуса всех устройств в топик status/ble
@@ -1213,7 +1213,7 @@ func (p *Publisher) publishDeviceStatus(mac string, status string, lastSeen time
 	}
 
 	payloadBytes, _ := json.Marshal(payload)
-	return p.client.PublishJSON(topic, payloadBytes, false)
+	return p.client.PublishJSON(topic, payloadBytes, true)
 }
 
 // CheckOfflineDevices — проверка устройств на offline по presence_timeout
