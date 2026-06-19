@@ -177,7 +177,10 @@ func (c *Client) Publish(topic string, payload interface{}, retain bool) error {
 	}
 
 	token := c.client.Publish(topic, c.config.QoS, retain, payloadBytes)
-	if token.Wait() && token.Error() != nil {
+	if !token.WaitTimeout(5 * time.Second) {
+		return fmt.Errorf("timeout publishing to %s (token did not complete within 5s)", topic)
+	}
+	if token.Error() != nil {
 		return fmt.Errorf("failed to publish to %s: %w", topic, token.Error())
 	}
 
@@ -197,7 +200,10 @@ func (c *Client) PublishJSON(topic string, jsonBytes []byte, retain bool) error 
 	}
 
 	token := c.client.Publish(topic, c.config.QoS, retain, jsonBytes)
-	if token.Wait() && token.Error() != nil {
+	if !token.WaitTimeout(5 * time.Second) {
+		return fmt.Errorf("timeout publishing JSON to %s (token did not complete within 5s)", topic)
+	}
+	if token.Error() != nil {
 		return fmt.Errorf("failed to publish JSON to %s: %w", topic, token.Error())
 	}
 
