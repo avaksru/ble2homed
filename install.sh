@@ -168,6 +168,32 @@ else
     echo "ℹ️  Конфигурация уже существует, не перезаписываем"
 fi
 
+# 8.1. Устанавливаем веб-интерфейс
+echo "🌐 Устанавливаем веб-интерфейс..."
+if [ -d "/usr/share/homed-web" ]; then
+    cp -r "$TEMP_DIR/homed-web/"* /usr/share/homed-web/
+    echo "✅ Веб-интерфейс установлен в /usr/share/homed-web"
+
+    # Модифицируем app.js если нужно
+    if [ -f "/usr/share/homed-web/js/app.js" ] && ! grep -q "ble" "/usr/share/homed-web/js/app.js"; then
+        echo "🔧 Добавляем поддержку BLE в app.js..."
+
+        # Вставка case 'ble' после case 'custom'
+        sed -i "/case 'custom':     this.services\[service\] = new Custom(this, list\[2\]); break;/a\\
+                    case 'ble':        this.services[service] = new BLE(this, list[2]); break;" /usr/share/homed-web/js/app.js
+
+        # Замена строки names
+        sed -i "s/let names = \['dashboard', 'recorder', 'automation', 'zigbee', 'matter', 'modbus', 'custom'\];/let names = ['dashboard', 'recorder', 'automation', 'zigbee', 'matter', 'ble', 'modbus', 'custom'];/" /usr/share/homed-web/js/app.js
+
+        # Замена строки short
+        sed -i "s/let short = \['dash', 'rec', 'auto', 'zbee', 'mttr', 'mbus', 'cust'\];/let short = ['dash', 'rec', 'auto', 'zbee', 'mattr', 'ble', 'mbus', 'cust'];/" /usr/share/homed-web/js/app.js
+
+        echo "✅ Поддержка BLE добавлена в app.js"
+    fi
+else
+    echo "ℹ️  Директория /usr/share/homed-web не найдена, пропускаем установку веб-интерфейса"
+fi
+
 # 9. Устанавливаем службу
 if command -v systemctl >/dev/null 2>&1; then
     echo "⚙️  Устанавливаем systemd службу..."
