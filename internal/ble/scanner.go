@@ -92,6 +92,7 @@ type Scanner struct {
 	watchdogCancel context.CancelFunc
 	debugEnabled   bool
 	recoveryCount  atomic.Int32 // количество последовательных неудачных восстановлений
+	restartScan    chan struct{} // канал для принудительного прерывания doScan при recovery
 }
 
 // NewScanner — создание нового BLE сканера
@@ -120,6 +121,7 @@ func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error
 		filterMACs:     filterMACs,
 		lastDeviceTime: newShardedTimeMap(),
 		debugEnabled:   logger.GetLevel() <= zerolog.DebugLevel,
+		restartScan:    make(chan struct{}, 1),
 		advPool: sync.Pool{
 			New: func() interface{} {
 				return &types.Advertisement{}
@@ -402,7 +404,7 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		close(errChan)
 	}()
 
-	// Ждем либо завершения таймаута, либо ошибки, либо отмены контекста
+	// Ждем либо завершения таймаута, либо ошибки, либо отмены контекста, либо сигнала restart
 	select {
 	case <-scanCtx.Done():
 		// Таймаут сканирования - останавливаем сканирование
@@ -431,6 +433,18 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		case <-time.After(5 * time.Second):
 			s.logger.Warn().Msg("Scan goroutine did not finish after ctx cancel, proceeding anyway")
 			return ctx.Err()
+		}
+	case <-s.restartScan:
+		// Принудительный рестарт сканирования (от watchdog при recovery)
+		s.logger.Info().Msg("Restarting scan due to recovery signal")
+		s.adapter.StopScan()
+		// Ждем завершения горутины сканирования с таймаутом
+		select {
+		case <-scanDone:
+			return nil
+		case <-time.After(5 * time.Second):
+			s.logger.Warn().Msg("Scan goroutine did not finish after restart signal, proceeding anyway")
+			return nil
 		}
 	}
 }
@@ -616,6 +630,12 @@ func (s *Scanner) watchdogLoop(ctx context.Context) {
 				if attempts >= 3 {
 					s.logger.Warn().Int32("attempt", attempts).Msg("Multiple recovery attempts failed, trying hciconfig/bluetoothctl reset")
 					s.resetAdapterViaSystemCommand(ctx)
+				}
+
+				// Шаг 6: Отправляем сигнал для принудительного прерывания doScan и перезапуска
+				select {
+				case s.restartScan <- struct{}{}:
+				default:
 				}
 
 				s.logger.Info().Int32("attempt", attempts).Msg("✅ BLE adapter recovery sequence completed, scan will resume automatically")
