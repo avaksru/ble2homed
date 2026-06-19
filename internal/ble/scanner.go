@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/avaksru/ble2homed/pkg/types"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"tinygo.org/x/bluetooth"
 )
 
@@ -89,6 +91,7 @@ type Scanner struct {
 	lastDeviceTime *shardedTimeMap // сегментированная карта дедубликации
 	watchdogCancel context.CancelFunc
 	debugEnabled   bool
+	recoveryCount  atomic.Int32 // количество последовательных неудачных восстановлений
 }
 
 // NewScanner — создание нового BLE сканера
@@ -405,9 +408,14 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		// Таймаут сканирования - останавливаем сканирование
 		s.logger.Info().Msg("Scan interval completed, stopping scan")
 		s.adapter.StopScan()
-		// Ждем завершения горутины сканирования
-		<-scanDone
-		return nil
+		// Ждем завершения горутины сканирования с таймаутом
+		select {
+		case <-scanDone:
+			return nil
+		case <-time.After(5 * time.Second):
+			s.logger.Warn().Msg("Scan goroutine did not finish after timeout, proceeding anyway")
+			return nil
+		}
 	case err := <-errChan:
 		if err != nil {
 			return err
@@ -416,8 +424,14 @@ func (s *Scanner) doScan(ctx context.Context) error {
 	case <-ctx.Done():
 		// Внешний контекст отменен
 		s.adapter.StopScan()
-		<-scanDone
-		return ctx.Err()
+		// Ждем завершения горутины сканирования с таймаутом
+		select {
+		case <-scanDone:
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			s.logger.Warn().Msg("Scan goroutine did not finish after ctx cancel, proceeding anyway")
+			return ctx.Err()
+		}
 	}
 }
 
@@ -566,26 +580,103 @@ func (s *Scanner) watchdogLoop(ctx context.Context) {
 			timeSinceLastAdv := time.Since(*lastAdv)
 
 			if timeSinceLastAdv > watchdogTimeout {
+				attempts := s.recoveryCount.Add(1)
 				s.logger.Error().
 					Dur("since_last", timeSinceLastAdv).
+					Int32("attempt", attempts).
 					Msg("❌ NO BLE PACKETS RECEIVED FOR TOO LONG! Bluetooth stack probably hanged. Restarting adapter...")
 
-				// Принудительно останавливаем сканирование и перезапускаем адаптер
+				// Шаг 1: Останавливаем сканирование
 				s.mu.Lock()
+				
+				// Очищаем кэш дедубликации, чтобы после восстановления не пропустить пакеты
+				s.lastDeviceTime.Cleanup(time.Now().Add(1 * time.Hour)) // удаляем все записи
+				
 				if err := s.adapter.StopScan(); err != nil {
 					s.logger.Warn().Err(err).Msg("Failed to stop scan during recovery")
 				}
+				time.Sleep(500 * time.Millisecond)
 
-				// Переинициализируем адаптер полностью
+				// Шаг 2: Переинициализируем адаптер
 				if err := s.adapter.Enable(); err != nil {
 					s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter during recovery")
 				}
+				
+				// Шаг 3: Ждем стабилизации адаптера
+				time.Sleep(3 * time.Second)
+
+				// Шаг 4: Пробуем остановить сканирование повторно (после переинициализации)
+				s.adapter.StopScan()
+
 				now := time.Now()
 				s.lastAdvTime.Store(&now)
 				s.mu.Unlock()
 
-				s.logger.Info().Msg("✅ BLE adapter restarted successfully, scan will resume automatically")
+				// Шаг 5: При множественных сбоях пробуем более агрессивное восстановление
+				if attempts >= 3 {
+					s.logger.Warn().Int32("attempt", attempts).Msg("Multiple recovery attempts failed, trying hciconfig/bluetoothctl reset")
+					s.resetAdapterViaSystemCommand(ctx)
+				}
+
+				s.logger.Info().Int32("attempt", attempts).Msg("✅ BLE adapter recovery sequence completed, scan will resume automatically")
+			} else {
+				// Сброс счетчика восстановлений при успешной работе
+				s.recoveryCount.Store(0)
 			}
 		}
 	}
+}
+
+// resetAdapterViaSystemCommand — принудительный сброс BLE адаптера через системные утилиты
+// Используется как крайняя мера при множественных сбоях восстановления
+func (s *Scanner) resetAdapterViaSystemCommand(ctx context.Context) {
+	// Пробуем bluetoothctl (современный BlueZ)
+	if err := runCommand(ctx, "bluetoothctl", "power", "off"); err != nil {
+		s.logger.Warn().Err(err).Msg("bluetoothctl power off failed")
+	} else {
+		time.Sleep(2 * time.Second)
+	}
+
+	// Пробуем bluetoothctl включить адаптер
+	if err := runCommand(ctx, "bluetoothctl", "power", "on"); err != nil {
+		s.logger.Warn().Err(err).Msg("bluetoothctl power on failed")
+	} else {
+		time.Sleep(2 * time.Second)
+	}
+
+	// Если bluetoothctl не сработал, пробуем hciconfig legacy
+	runCommand(ctx, "hciconfig", "hci0", "down")
+	time.Sleep(1 * time.Second)
+	runCommand(ctx, "hciconfig", "hci0", "up")
+	time.Sleep(2 * time.Second)
+
+	// После сброса через систему, снова пробуем инициализировать адаптер через библиотеку
+	s.mu.Lock()
+	if err := s.adapter.Enable(); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter after system reset")
+	}
+	now := time.Now()
+	s.lastAdvTime.Store(&now)
+	s.mu.Unlock()
+
+	s.logger.Info().Msg("BLE adapter system reset completed")
+}
+
+// runCommand — запуск внешней команды с логированием
+func runCommand(ctx context.Context, name string, args ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(output) > 0 {
+			return fmt.Errorf("%s %v failed: %s (output: %s)", name, args, err, strings.TrimSpace(string(output)))
+		}
+		return fmt.Errorf("%s %v failed: %w", name, args, err)
+	}
+	if len(output) > 0 {
+		log.Debug().Str("cmd", name).Str("output", strings.TrimSpace(string(output))).Msg("System command output")
+	}
+	return nil
 }

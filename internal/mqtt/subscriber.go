@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	mqttlib "github.com/eclipse/paho.mqtt.golang"
 	"github.com/rs/zerolog"
@@ -13,10 +15,11 @@ import (
 
 // Subscriber — подписка на MQTT топики команд
 type Subscriber struct {
-	client    *Client
-	publisher *Publisher
-	base      string
-	logger    zerolog.Logger
+	client          *Client
+	publisher       *Publisher
+	base            string
+	logger          zerolog.Logger
+	getPropsLimiter sync.Map // rate limiter для getProperties логов (deviceID -> time.Time)
 }
 
 type bleCommand struct {
@@ -187,7 +190,15 @@ s.publisher.PublishBleStatusNow()
 
 				device, exists := s.publisher.GetDevice(deviceID)
 				if !exists {
-					s.logger.Warn().Str("device", deviceID).Msg("Device not found for getProperties request")
+					// Rate limit: логируем не чаще 1 раза в минуту для каждого device
+					if lastLog, loaded := s.getPropsLimiter.LoadOrStore(deviceID, time.Now()); loaded {
+						if time.Since(lastLog.(time.Time)) >= 1*time.Minute {
+							s.getPropsLimiter.Store(deviceID, time.Now())
+							s.logger.Debug().Str("device", deviceID).Msg("Device not found for getProperties request (device may not be discovered yet)")
+						}
+					} else {
+						s.logger.Debug().Str("device", deviceID).Msg("Device not found for getProperties request (device may not be discovered yet)")
+					}
 					return
 				}
 
