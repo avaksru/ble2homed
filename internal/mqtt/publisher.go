@@ -867,7 +867,6 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 
 	for _, item := range dbEntry.Exposes {
 		if item == "last" {
-			items = append(items, "last")
 			continue
 		}
 		items = append(items, item)
@@ -902,7 +901,6 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 			Items:   items,
 			Options: options,
 		},
-		Last: time.Now().Unix(),
 	}
 
 	base := p.config.MQTTPrefix
@@ -954,25 +952,12 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 		return nil // Нет exposes для публикации
 	}
 
-	// Добавляем "last" если его нет
-	hasLast := false
-	for _, e := range exposes {
-		if e == "last" {
-			hasLast = true
-			break
-		}
-	}
-	if !hasLast {
-		exposes = append(exposes, "last")
-	}
-
 	// Строим expose из данных базы
 	items := make([]string, 0, len(exposes))
 	options := make(map[string]types.ExposeOption, len(exposes))
 
 	for _, item := range exposes {
 		if item == "last" {
-			items = append(items, "last")
 			continue
 		}
 
@@ -1010,7 +995,6 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 			Items:   items,
 			Options: options,
 		},
-		Last: time.Now().Unix(),
 	}
 
 	base := p.config.MQTTPrefix

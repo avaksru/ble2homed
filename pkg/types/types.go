@@ -180,7 +180,6 @@ type DeviceExpose struct {
 // HomedExpose — стандартный формат expose для всех устройств
 type HomedExpose struct {
 	Common ExposeCommon `json:"common"`
-	Last   int64        `json:"last"`
 }
 
 // BleStatusDevice — информация об устройстве для топика status/ble
@@ -390,14 +389,11 @@ func (d *Device) GetHomedExpose() HomedExpose {
 		}
 	}
 
-	items = append(items, "last")
-
 	return HomedExpose{
 		Common: ExposeCommon{
 			Items:   items,
 			Options: options,
 		},
-		Last: d.LastSeen.Unix(),
 	}
 }
 
