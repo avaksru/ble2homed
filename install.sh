@@ -175,7 +175,7 @@ if [ -d "/usr/share/homed-web" ]; then
     echo "✅ Веб-интерфейс установлен в /usr/share/homed-web"
 
     # Модифицируем app.js если нужно
-    if [ -f "/usr/share/homed-web/js/app.js" ] && ! grep -q "ble" "/usr/share/homed-web/js/app.js"; then
+    if [ -f "/usr/share/homed-web/js/app.js" ] && ! grep -q "case 'ble':" "/usr/share/homed-web/js/app.js"; then
         echo "🔧 Добавляем поддержку BLE в app.js..."
 
         # Вставка case 'ble' после case 'custom'
@@ -186,9 +186,16 @@ if [ -d "/usr/share/homed-web" ]; then
         sed -i "s/let names = \['dashboard', 'recorder', 'automation', 'zigbee', 'matter', 'modbus', 'custom'\];/let names = ['dashboard', 'recorder', 'automation', 'zigbee', 'matter', 'ble', 'modbus', 'custom'];/" /usr/share/homed-web/js/app.js
 
         # Замена строки short
-        sed -i "s/let short = \['dash', 'rec', 'auto', 'zbee', 'mttr', 'mbus', 'cust'\];/let short = ['dash', 'rec', 'auto', 'zbee', 'mattr', 'ble', 'mbus', 'cust'];/" /usr/share/homed-web/js/app.js
+        sed -i "s/let short = \['dash', 'rec', 'auto', 'zbee', 'mtr', 'mbus', 'cst'\];/let short = ['dash', 'rec', 'auto', 'zbee', 'mtr', 'ble', 'mbus', 'cst'];/" /usr/share/homed-web/js/app.js
 
         echo "✅ Поддержка BLE добавлена в app.js"
+    fi
+
+    # Добавляем js/ble.js в index.html если нужно
+    if [ -f "/usr/share/homed-web/index.html" ] && ! grep -q 'js/ble.js' /usr/share/homed-web/index.html; then
+        echo "🔧 Добавляем js/ble.js в index.html..."
+        sed -i '/<script src="js\/custom.js"><\/script>/a\    <script src="js/ble.js"></script>' /usr/share/homed-web/index.html
+        echo "✅ js/ble.js добавлен в index.html"
     fi
 else
     echo "ℹ️  Директория /usr/share/homed-web не найдена, пропускаем установку веб-интерфейса"
