@@ -86,25 +86,30 @@ func ParseBLEDataWithBindKey(adv types.Advertisement, cfg *types.BLEConfig, bind
 		beforeCount := len(result)
 
 		// ✅ BTHome v2 FCD2
-		if strings.Contains(uuid, "FCD2") {
-			battery := int(sd.Data[4])
-			tempRaw := int16(binary.LittleEndian.Uint16(sd.Data[6:8]))
-			humidityRaw := binary.LittleEndian.Uint16(sd.Data[9:11])
-			
-			temp := float64(tempRaw) / 100.0
-			humidity := float64(humidityRaw) / 100.0
+if strings.Contains(uuid, "FCD2") {
+    if len(sd.Data) >= 11 {
+        battery := int(sd.Data[4])
+        tempRaw := int16(binary.LittleEndian.Uint16(sd.Data[6:8]))
+        humidityRaw := binary.LittleEndian.Uint16(sd.Data[9:11])
 
-			result["temp"] = types.ParsedValue{Value: temp, Unit: "°C", Type: "temp", Source: "BTHome v2", Timestamp: now}
-			result["humidity"] = types.ParsedValue{Value: humidity, Unit: "%", Type: "humidity", Source: "BTHome v2", Timestamp: now}
-			result["battery"] = types.ParsedValue{Value: battery, Unit: "%", Type: "battery", Source: "BTHome v2", Timestamp: now}
+        temp := float64(tempRaw) / 100.0
+        humidity := float64(humidityRaw) / 100.0
 
-			if len(sd.Data) == 14 {
-				voltageRaw := int16(binary.LittleEndian.Uint16(sd.Data[10:12]))
-				voltage := float64(voltageRaw)
-				if voltageRaw > 1000 { voltage = voltage / 1000.0 }
-				result["voltage"] = types.ParsedValue{Value: voltage, Unit: "V", Type: "voltage", Source: "BTHome v2", Timestamp: now}
-			}
-		}
+        result["temp"] = types.ParsedValue{Value: temp, Unit: "°C", Type: "temp", Source: "BTHome v2", Timestamp: now}
+        result["humidity"] = types.ParsedValue{Value: humidity, Unit: "%", Type: "humidity", Source: "BTHome v2", Timestamp: now}
+        result["battery"] = types.ParsedValue{Value: battery, Unit: "%", Type: "battery", Source: "BTHome v2", Timestamp: now}
+
+        if len(sd.Data) >= 14 {
+            voltageRaw := int16(binary.LittleEndian.Uint16(sd.Data[10:12]))
+            voltage := float64(voltageRaw)
+            if voltageRaw > 1000 {
+                voltage = voltage / 1000.0
+            }
+            result["voltage"] = types.ParsedValue{Value: voltage, Unit: "V", Type: "voltage", Source: "BTHome v2", Timestamp: now}
+        }
+    }
+    // Если данных меньше 11 байт — пропускаем, parseBTHomeData ниже тоже вернёт пустой результат
+}
 
 		// ✅ Xiaomi MIJIA FE95 (LYWSD02, LYWSD03MMC и другие)
 		if strings.Contains(uuid, "FE95") && len(sd.Data) >= 5 {
