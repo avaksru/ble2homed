@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/avaksru/ble2homed/pkg/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
@@ -47,7 +49,7 @@ func main() {
 	}
 
 	// Настройка логирования
-	setupLogger(cfg.Log.Level)
+	setupLogger(cfg.Log)
 
 	log.Info().
 		Str("version", version).
@@ -70,10 +72,10 @@ func main() {
 }
 
 // setupLogger — настройка zerolog
-func setupLogger(level string) {
+func setupLogger(logConfig types.LogConfig) {
 	zerolog.TimeFieldFormat = time.RFC3339
 
-	switch level {
+	switch logConfig.Level {
 	case "debug":
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	case "info":
@@ -86,8 +88,26 @@ func setupLogger(level string) {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	}
 
+	var writers []io.Writer
+
 	// Красивый вывод в консоль
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	writers = append(writers, zerolog.ConsoleWriter{Out: os.Stderr})
+
+	// Вывод в файл, если указан путь
+	if logConfig.FilePath != "" {
+		fileWriter := &lumberjack.Logger{
+			Filename:   logConfig.FilePath,
+			MaxSize:    logConfig.MaxSize,    // MB
+			MaxBackups: logConfig.MaxBackups, // количество бэкапов
+			MaxAge:     logConfig.MaxAge,     // дней
+			Compress:   logConfig.Compress,   // сжимать
+		}
+		writers = append(writers, fileWriter)
+	}
+
+	// Множественный вывод
+	multi := zerolog.MultiLevelWriter(writers...)
+	log.Logger = log.Output(multi)
 }
 
 // run — основная логика приложения
@@ -106,10 +126,18 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	mqttClient := mqtt.NewClient(mqttConfig, log.Logger)
 
-	// 2. Создаем publisher
-	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger)
+	// Всегда работаем в режиме only_known_devices
+	cfg.OnlyKnownDevices = true
 
-	// 3. Создаем discovery
+	// 2. Создаем publisher
+	publisher := mqtt.NewPublisher(mqttClient, cfg, log.Logger, version)
+
+	// 3. Загружаем список известных устройств из файла базы данных
+	if err := publisher.RefreshKnownDevicesFromDatabase(); err != nil {
+		return fmt.Errorf("failed to load known devices from database: %w", err)
+	}
+
+	// 4. Создаем discovery
 	hadiscovery := discovery.NewDiscovery(mqttClient, log.Logger)
 
 	// 4. Создаем history manager
@@ -134,11 +162,20 @@ func run(ctx context.Context, cfg *types.Config) error {
 		}
 	})
 
-	// Подключаемся к MQTT с повторными попытками
+	// Подключаемся к MQTT с повторными попятками
 	if err := connectWithRetry(ctx, mqttClient, 20*time.Second); err != nil {
 		return fmt.Errorf("failed to connect to MQTT after retries: %w", err)
 	}
 	defer mqttClient.Disconnect()
+
+	// Публикуем expose на старте для всех известных устройств из базы данных
+	for mac := range cfg.KnownDevices {
+		if err := publisher.PublishStartupExpose(mac); err != nil {
+			log.Warn().Err(err).Str("mac", mac).Msg("Failed to publish startup expose")
+		} else {
+			log.Debug().Str("mac", mac).Msg("Startup expose published from database")
+		}
+	}
 
 	// 6. Создаем BLE сканер
 	scanner, err := ble.NewScanner(&cfg.BLE, log.Logger)
@@ -148,19 +185,22 @@ func run(ctx context.Context, cfg *types.Config) error {
 
 	// Обработчик advertising данных
 	scanner.SetAdvertisementHandler(func(adv types.Advertisement) {
-		// Фильтр: если only_known_devices = true, пропускаем неизвестные устройства
-		if cfg.OnlyKnownDevices {
-			normalizedMAC := types.NormalizeMACForTopic(adv.Addr)
-			if _, known := cfg.KnownDevices[normalizedMAC]; !known {
-				log.Debug().
-					Str("mac", adv.Addr).
-					Msg("Skipping unknown device (only_known_devices=true)")
-				return
-			}
+		// Фильтр: если permitJoin = false, парсим только из базы известных устройств
+		if !publisher.ShouldProcessAdvertisement(adv.Addr) {
+			log.Debug().
+				Str("mac", adv.Addr).
+				Msg("Skipping unknown device (permitJoin=false)")
+			return
 		}
 
-		// Парсим данные
-		parsed := parser.ParseBLEData(adv)
+		// Парсим данные с поддержкой bindkey для Xiaomi устройств
+		parsed := parser.ParseBLEDataWithBindKey(adv, &cfg.BLE, func(mac string) string {
+			normalizedMAC := types.NormalizeMACForTopic(mac)
+			if device, exists := cfg.KnownDevices[normalizedMAC]; exists {
+				return device.BindKey
+			}
+			return ""
+		})
 
 		log.Debug().
 			Str("mac", adv.Addr).

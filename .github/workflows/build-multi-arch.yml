@@ -233,8 +233,8 @@ jobs:
           # Копируем конфиг
           cp configs/homed-ble.conf ./
 
-          # Создаём tar.gz архив с бинарником и конфигом
-          tar czf "${BINARY_ORIG}.tar.gz" "${BINARY_TARGET}" homed-ble.conf
+          # Создаём tar.gz архив с бинарником, конфигом и веб-интерфейсом
+          tar czf "${BINARY_ORIG}.tar.gz" "${BINARY_TARGET}" homed-ble.conf homed-web/
 
           echo "::group::Archive info"
           ls -lh "${BINARY_ORIG}.tar.gz"

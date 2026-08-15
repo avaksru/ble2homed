@@ -32,18 +32,25 @@ const (
 	ServiceBTHome = "FCD2"
 )
 
+// BindKeyLookup — функция для получения bindkey по MAC-адресу
+type BindKeyLookup func(mac string) string
+
 // ParseBLEData — полный парсинг BLE advertising данных
-func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
-	result := make(map[string]types.ParsedValue)
+func ParseBLEData(adv types.Advertisement, cfg *types.BLEConfig) map[string]types.ParsedValue {
+	return ParseBLEDataWithBindKey(adv, cfg, nil)
+}
+
+// ParseBLEDataWithBindKey — полный парсинг BLE advertising данных с поддержкой bindkey
+func ParseBLEDataWithBindKey(adv types.Advertisement, cfg *types.BLEConfig, bindKeyLookup BindKeyLookup) map[string]types.ParsedValue {
+	result := make(map[string]types.ParsedValue, 8)
 	now := time.Now()
 
 	// Парсинг manufacturer specific data
 	if len(adv.Manufacturer) >= 2 {
 		companyID := binary.LittleEndian.Uint16(adv.Manufacturer[0:2])
-		companyHex := fmt.Sprintf("%04X", companyID)
 
 		// HomeAssistant/Puck.js JSON5 парсинг
-		if int(companyID) == CompanyHomeAssistant && len(adv.Manufacturer) > 2 {
+		if !cfg.DisableJSONParsing && int(companyID) == CompanyHomeAssistant && len(adv.Manufacturer) > 2 {
 			parsed := parseHomeAssistantJSON(adv.Manufacturer[2:], now)
 			for k, v := range parsed {
 				result[k] = v
@@ -59,11 +66,17 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 		}
 
 		// Сохраняем raw manufacturer data
-		result["manufacturer/"+companyHex] = types.ParsedValue{
-			Value:     hex.EncodeToString(adv.Manufacturer),
-			Type:      "manufacturer",
-			Source:    "manufacturer",
-			Timestamp: now,
+		if !cfg.DisableManufacturerRaw {
+			var buf [4]byte
+			hex.Encode(buf[:], adv.Manufacturer[0:2])
+			companyHex := string(buf[:])
+
+			result["manufacturer/"+companyHex] = types.ParsedValue{
+				Value:     hex.EncodeToString(adv.Manufacturer),
+				Type:      "manufacturer",
+				Source:    "manufacturer",
+				Timestamp: now,
+			}
 		}
 	}
 
@@ -71,6 +84,42 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	for _, sd := range adv.ServiceData {
 		uuid := strings.ToUpper(sd.UUID)
 		beforeCount := len(result)
+
+		// ✅ BTHome v2 FCD2
+		if strings.Contains(uuid, "FCD2") {
+			battery := int(sd.Data[4])
+			tempRaw := int16(binary.LittleEndian.Uint16(sd.Data[6:8]))
+			humidityRaw := binary.LittleEndian.Uint16(sd.Data[9:11])
+			
+			temp := float64(tempRaw) / 100.0
+			humidity := float64(humidityRaw) / 100.0
+
+			result["temp"] = types.ParsedValue{Value: temp, Unit: "°C", Type: "temp", Source: "BTHome v2", Timestamp: now}
+			result["humidity"] = types.ParsedValue{Value: humidity, Unit: "%", Type: "humidity", Source: "BTHome v2", Timestamp: now}
+			result["battery"] = types.ParsedValue{Value: battery, Unit: "%", Type: "battery", Source: "BTHome v2", Timestamp: now}
+
+			if len(sd.Data) == 14 {
+				voltageRaw := int16(binary.LittleEndian.Uint16(sd.Data[10:12]))
+				voltage := float64(voltageRaw)
+				if voltageRaw > 1000 { voltage = voltage / 1000.0 }
+				result["voltage"] = types.ParsedValue{Value: voltage, Unit: "V", Type: "voltage", Source: "BTHome v2", Timestamp: now}
+			}
+		}
+
+		// ✅ Xiaomi MIJIA FE95 (LYWSD02, LYWSD03MMC и другие)
+		if strings.Contains(uuid, "FE95") && len(sd.Data) >= 5 {
+			// Получаем bindkey для этого устройства, если доступен
+			var bindKey string
+			if bindKeyLookup != nil {
+				bindKey = bindKeyLookup(adv.Addr)
+			}
+			
+			// Используем новый Xiaomi парсер с поддержкой шифрования
+			xiaomiParsed := ParseXiaomiServiceData(sd.Data, bindKey, now)
+			for k, v := range xiaomiParsed {
+				result[k] = v
+			}
+		}
 
 		// Известные сервисы
 		switch {
@@ -134,16 +183,20 @@ func ParseBLEData(adv types.Advertisement) map[string]types.ParsedValue {
 	}
 
 	// Попытка распознать Eddystone
-	if eddystone := parseEddystone(adv); len(eddystone) > 0 {
-		for k, v := range eddystone {
-			result[k] = v
+	if !cfg.DisableEddystone {
+		if eddystone := parseEddystone(adv); len(eddystone) > 0 {
+			for k, v := range eddystone {
+				result[k] = v
+			}
 		}
 	}
 
 	// Попытка распознать iBeacon
-	if ibeacon := parseIBeacon(adv); len(ibeacon) > 0 {
-		for k, v := range ibeacon {
-			result[k] = v
+	if !cfg.DisableIBeacon {
+		if ibeacon := parseIBeacon(adv); len(ibeacon) > 0 {
+			for k, v := range ibeacon {
+				result[k] = v
+			}
 		}
 	}
 

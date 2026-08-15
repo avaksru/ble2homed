@@ -4,27 +4,95 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/avaksru/ble2homed/pkg/types"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"tinygo.org/x/bluetooth"
 )
 
+// timeShard — один сегмент сегментированной карты времени
+type timeShard struct {
+	mu     sync.RWMutex
+	values map[string]time.Time
+}
+
+// shardedTimeMap — сегментированная карта для минимальных конфликтов блокировок
+type shardedTimeMap struct {
+	shards [16]timeShard
+}
+
+func newShardedTimeMap() *shardedTimeMap {
+	m := &shardedTimeMap{}
+	for i := range m.shards {
+		m.shards[i].values = make(map[string]time.Time)
+	}
+	return m
+}
+
+func (m *shardedTimeMap) getShard(key string) *timeShard {
+	hash := uint8(0)
+	if len(key) > 0 {
+		hash = key[0]
+	}
+	return &m.shards[hash%16]
+}
+
+func (m *shardedTimeMap) Get(key string) (time.Time, bool) {
+	shard := m.getShard(key)
+	shard.mu.RLock()
+	t, ok := shard.values[key]
+	shard.mu.RUnlock()
+	return t, ok
+}
+
+func (m *shardedTimeMap) Set(key string, t time.Time) {
+	shard := m.getShard(key)
+	shard.mu.Lock()
+	shard.values[key] = t
+	shard.mu.Unlock()
+}
+
+func (m *shardedTimeMap) Cleanup(olderThan time.Time) int {
+	removed := 0
+	for i := range m.shards {
+		shard := &m.shards[i]
+		shard.mu.Lock()
+		for k, v := range shard.values {
+			if v.Before(olderThan) {
+				delete(shard.values, k)
+				removed++
+			}
+		}
+		shard.mu.Unlock()
+	}
+	return removed
+}
+
 // Scanner — BLE сканер устройств
 type Scanner struct {
-	config     *types.BLEConfig
-	logger     zerolog.Logger
-	adapter    *bluetooth.Adapter
-	filterMACs map[string]bool
-	onAdv      func(types.Advertisement)
-	mu         sync.RWMutex
-	running    bool
-	cancel     context.CancelFunc
-	macCache   map[string]string // кэш нормализованных MAC-адресов
-	advPool    sync.Pool         // пул объектов Advertisement
+	config         *types.BLEConfig
+	logger         zerolog.Logger
+	adapter        *bluetooth.Adapter
+	filterMACs     map[string]bool
+	onAdv          func(types.Advertisement)
+	mu             sync.RWMutex
+	running        bool
+	cancel         context.CancelFunc
+	macCache       sync.Map // lock-free кэш нормализованных MAC-адресов
+	advPool        sync.Pool // пул объектов Advertisement
+	bytesPool      sync.Pool // пул байтовых буферов для manufacturer data
+	lastAdvTime    atomic.Pointer[time.Time] // время последнего пакета (lock-free)
+	lastDeviceTime *shardedTimeMap // сегментированная карта дедубликации
+	watchdogCancel context.CancelFunc
+	debugEnabled   bool
+	recoveryCount  atomic.Int32 // количество последовательных неудачных восстановлений
+	restartScan    chan struct{} // канал для принудительного прерывания doScan при recovery
 }
 
 // NewScanner — создание нового BLE сканера
@@ -44,18 +112,31 @@ func NewScanner(config *types.BLEConfig, logger zerolog.Logger) (*Scanner, error
 		filterMACs[normalized] = true
 	}
 
-	return &Scanner{
-		config:     config,
-		logger:     logger.With().Str("component", "ble_scanner").Logger(),
-		adapter:    adapter,
-		filterMACs: filterMACs,
-		macCache:   make(map[string]string),
+	now := time.Now()
+
+	s := &Scanner{
+		config:         config,
+		logger:         logger.With().Str("component", "ble_scanner").Logger(),
+		adapter:        adapter,
+		filterMACs:     filterMACs,
+		lastDeviceTime: newShardedTimeMap(),
+		debugEnabled:   logger.GetLevel() <= zerolog.DebugLevel,
+		restartScan:    make(chan struct{}, 1),
 		advPool: sync.Pool{
 			New: func() interface{} {
 				return &types.Advertisement{}
 			},
 		},
-	}, nil
+		bytesPool: sync.Pool{
+			New: func() interface{} {
+				buf := make([]byte, 0, 128)
+				return &buf
+			},
+		},
+	}
+	s.lastAdvTime.Store(&now)
+
+	return s, nil
 }
 
 // SetAdvertisementHandler — установка обработчика advertising данных
@@ -78,9 +159,14 @@ func (s *Scanner) Start(ctx context.Context) error {
 	s.running = true
 	s.mu.Unlock()
 
-	s.logger.Info().
-		Int("filter_count", len(s.filterMACs)).
-		Msg("Starting BLE scanner")
+		s.logger.Info().
+			Int("filter_count", len(s.filterMACs)).
+			Msg("Starting BLE scanner")
+
+	// Запускаем вотчдог для детектирования зависаний
+	watchdogCtx, watchdogCancel := context.WithCancel(ctx)
+	s.watchdogCancel = watchdogCancel
+	go s.watchdogLoop(watchdogCtx)
 
 	// Запускаем сканирование в отдельной горутине
 	go s.scanLoop(ctx)
@@ -118,6 +204,11 @@ func (s *Scanner) Stop() {
 		}
 	}
 	s.mu.Unlock()
+
+	// Останавливаем вотчдог
+	if s.watchdogCancel != nil {
+		s.watchdogCancel()
+	}
 
 	// Ждем с таймаутом полной остановки всех операций
 	timeout := time.After(5 * time.Second)
@@ -217,6 +308,19 @@ func (s *Scanner) doScan(ctx context.Context) error {
 			}
 		}
 
+		// ✅ Фильтр по минимальному RSSI
+		if int(scanResult.RSSI) < -90 {
+			return
+		}
+
+		// ✅ Дедубликация: игнорируем пакеты от одного устройства чаще чем раз в 1 секунду
+		now := time.Now()
+		lastTime, exists := s.lastDeviceTime.Get(addr)
+		if exists && now.Sub(lastTime) < 1*time.Second {
+			return
+		}
+		s.lastDeviceTime.Set(addr, now)
+
 		// Получаем объект из пула
 		advPtr := s.advPool.Get().(*types.Advertisement)
 		adv := advPtr
@@ -255,6 +359,8 @@ func (s *Scanner) doScan(ctx context.Context) error {
 				})
 			}
 		}
+
+		s.lastAdvTime.Store(&now)
 
 		s.logger.Debug().
 			Str("mac", adv.Addr).
@@ -298,15 +404,20 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		close(errChan)
 	}()
 
-	// Ждем либо завершения таймаута, либо ошибки, либо отмены контекста
+	// Ждем либо завершения таймаута, либо ошибки, либо отмены контекста, либо сигнала restart
 	select {
 	case <-scanCtx.Done():
 		// Таймаут сканирования - останавливаем сканирование
 		s.logger.Info().Msg("Scan interval completed, stopping scan")
 		s.adapter.StopScan()
-		// Ждем завершения горутины сканирования
-		<-scanDone
-		return nil
+		// Ждем завершения горутины сканирования с таймаутом
+		select {
+		case <-scanDone:
+			return nil
+		case <-time.After(5 * time.Second):
+			s.logger.Warn().Msg("Scan goroutine did not finish after timeout, proceeding anyway")
+			return nil
+		}
 	case err := <-errChan:
 		if err != nil {
 			return err
@@ -315,8 +426,26 @@ func (s *Scanner) doScan(ctx context.Context) error {
 	case <-ctx.Done():
 		// Внешний контекст отменен
 		s.adapter.StopScan()
-		<-scanDone
-		return ctx.Err()
+		// Ждем завершения горутины сканирования с таймаутом
+		select {
+		case <-scanDone:
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			s.logger.Warn().Msg("Scan goroutine did not finish after ctx cancel, proceeding anyway")
+			return ctx.Err()
+		}
+	case <-s.restartScan:
+		// Принудительный рестарт сканирования (от watchdog при recovery)
+		s.logger.Info().Msg("Restarting scan due to recovery signal")
+		s.adapter.StopScan()
+		// Ждем завершения горутины сканирования с таймаутом
+		select {
+		case <-scanDone:
+			return nil
+		case <-time.After(5 * time.Second):
+			s.logger.Warn().Msg("Scan goroutine did not finish after restart signal, proceeding anyway")
+			return nil
+		}
 	}
 }
 
@@ -435,20 +564,139 @@ func normalizeMAC(mac string) string {
 	return mac
 }
 
-// normalizeMACCached — нормализация MAC-адреса с кэшированием
+// normalizeMACCached — нормализация MAC-адреса с кэшированием (lock-free)
 func (s *Scanner) normalizeMACCached(mac string) string {
-	s.mu.RLock()
-	if cached, ok := s.macCache[mac]; ok {
-		s.mu.RUnlock()
-		return cached
+	if cached, ok := s.macCache.Load(mac); ok {
+		return cached.(string)
 	}
-	s.mu.RUnlock()
 
 	normalized := normalizeMAC(mac)
-
-	s.mu.Lock()
-	s.macCache[mac] = normalized
-	s.mu.Unlock()
+	s.macCache.Store(mac, normalized)
 
 	return normalized
+}
+
+// watchdogLoop - вотчдог который отслеживает зависание bluetooth стека
+func (s *Scanner) watchdogLoop(ctx context.Context) {
+	const watchdogTimeout = 600 * time.Second
+	checkTicker := time.NewTicker(60 * time.Second)
+	defer checkTicker.Stop()
+
+	s.logger.Info().Dur("timeout", watchdogTimeout).Msg("Watchdog started")
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Msg("Watchdog stopped")
+			return
+		case <-checkTicker.C:
+			lastAdv := s.lastAdvTime.Load()
+			timeSinceLastAdv := time.Since(*lastAdv)
+
+			if timeSinceLastAdv > watchdogTimeout {
+				attempts := s.recoveryCount.Add(1)
+				s.logger.Error().
+					Dur("since_last", timeSinceLastAdv).
+					Int32("attempt", attempts).
+					Msg("❌ NO BLE PACKETS RECEIVED FOR TOO LONG! Bluetooth stack probably hanged. Restarting adapter...")
+
+				// Шаг 1: Останавливаем сканирование
+				s.mu.Lock()
+				
+				// Очищаем кэш дедубликации, чтобы после восстановления не пропустить пакеты
+				s.lastDeviceTime.Cleanup(time.Now().Add(1 * time.Hour)) // удаляем все записи
+				
+				if err := s.adapter.StopScan(); err != nil {
+					s.logger.Warn().Err(err).Msg("Failed to stop scan during recovery")
+				}
+				time.Sleep(500 * time.Millisecond)
+
+				// Шаг 2: Переинициализируем адаптер
+				if err := s.adapter.Enable(); err != nil {
+					s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter during recovery")
+				}
+				
+				// Шаг 3: Ждем стабилизации адаптера
+				time.Sleep(3 * time.Second)
+
+				// Шаг 4: Пробуем остановить сканирование повторно (после переинициализации)
+				s.adapter.StopScan()
+
+				now := time.Now()
+				s.lastAdvTime.Store(&now)
+				s.mu.Unlock()
+
+				// Шаг 5: При множественных сбоях пробуем более агрессивное восстановление
+				if attempts >= 3 {
+					s.logger.Warn().Int32("attempt", attempts).Msg("Multiple recovery attempts failed, trying hciconfig/bluetoothctl reset")
+					s.resetAdapterViaSystemCommand(ctx)
+				}
+
+				// Шаг 6: Отправляем сигнал для принудительного прерывания doScan и перезапуска
+				select {
+				case s.restartScan <- struct{}{}:
+				default:
+				}
+
+				s.logger.Info().Int32("attempt", attempts).Msg("✅ BLE adapter recovery sequence completed, scan will resume automatically")
+			} else {
+				// Сброс счетчика восстановлений при успешной работе
+				s.recoveryCount.Store(0)
+			}
+		}
+	}
+}
+
+// resetAdapterViaSystemCommand — принудительный сброс BLE адаптера через системные утилиты
+// Используется как крайняя мера при множественных сбоях восстановления
+func (s *Scanner) resetAdapterViaSystemCommand(ctx context.Context) {
+	// Пробуем bluetoothctl (современный BlueZ)
+	if err := runCommand(ctx, "bluetoothctl", "power", "off"); err != nil {
+		s.logger.Warn().Err(err).Msg("bluetoothctl power off failed")
+	} else {
+		time.Sleep(2 * time.Second)
+	}
+
+	// Пробуем bluetoothctl включить адаптер
+	if err := runCommand(ctx, "bluetoothctl", "power", "on"); err != nil {
+		s.logger.Warn().Err(err).Msg("bluetoothctl power on failed")
+	} else {
+		time.Sleep(2 * time.Second)
+	}
+
+	// Если bluetoothctl не сработал, пробуем hciconfig legacy
+	runCommand(ctx, "hciconfig", "hci0", "down")
+	time.Sleep(1 * time.Second)
+	runCommand(ctx, "hciconfig", "hci0", "up")
+	time.Sleep(2 * time.Second)
+
+	// После сброса через систему, снова пробуем инициализировать адаптер через библиотеку
+	s.mu.Lock()
+	if err := s.adapter.Enable(); err != nil {
+		s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter after system reset")
+	}
+	now := time.Now()
+	s.lastAdvTime.Store(&now)
+	s.mu.Unlock()
+
+	s.logger.Info().Msg("BLE adapter system reset completed")
+}
+
+// runCommand — запуск внешней команды с логированием
+func runCommand(ctx context.Context, name string, args ...string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if len(output) > 0 {
+			return fmt.Errorf("%s %v failed: %s (output: %s)", name, args, err, strings.TrimSpace(string(output)))
+		}
+		return fmt.Errorf("%s %v failed: %w", name, args, err)
+	}
+	if len(output) > 0 {
+		log.Debug().Str("cmd", name).Str("output", strings.TrimSpace(string(output))).Msg("System command output")
+	}
+	return nil
 }

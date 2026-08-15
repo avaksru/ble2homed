@@ -20,6 +20,7 @@ type Config struct {
 	MaxConnections     int                     `yaml:"max_connections" json:"max_connections"`
 	ConnectionTimeout  int                     `yaml:"connection_timeout" json:"connection_timeout"`
 	HistoryPath        string                  `yaml:"history_path" json:"history_path"`
+	DatabasePath       string                  `yaml:"database_path" json:"database_path"`
 	AdvertisedServices map[string]ServiceInfo  `yaml:"advertised_services" json:"advertised_services"`
 	HTTPPort           int                     `yaml:"http_port" json:"http_port"`
 	HTTPProxy          bool                    `yaml:"http_proxy" json:"http_proxy"`
@@ -75,6 +76,12 @@ type BLEConfig struct {
 	RestartPause int      `yaml:"restart_pause" json:"restart_pause"`   // пауза между циклами сканирования (секунды)
 	FilterMACs   []string `yaml:"filter_macs" json:"filter_macs"`
 	Connect      bool     `yaml:"connect" json:"connect"` // Подключаться для GATT операций
+
+	// Оптимизации производительности
+	DisableEddystone        bool `yaml:"disable_eddystone" json:"disable_eddystone"`
+	DisableIBeacon          bool `yaml:"disable_ibeacon" json:"disable_ibeacon"`
+	DisableJSONParsing      bool `yaml:"disable_json_parsing" json:"disable_json_parsing"`
+	DisableManufacturerRaw  bool `yaml:"disable_manufacturer_raw" json:"disable_manufacturer_raw"`
 }
 
 // PublishConfig — настройки публикации
@@ -97,7 +104,12 @@ type WebConfig struct {
 
 // LogConfig — настройки логирования
 type LogConfig struct {
-	Level string `yaml:"level" json:"level"` // debug, info, warn, error
+	Level      string `yaml:"level" json:"level"`           // debug, info, warn, error
+	FilePath   string `yaml:"file_path" json:"file_path"`   // путь к файлу логов (пусто = только консоль)
+	MaxSize    int    `yaml:"max_size" json:"max_size"`     // максимальный размер файла в МБ
+	MaxBackups int    `yaml:"max_backups" json:"max_backups"` // количество бэкапов
+	MaxAge     int    `yaml:"max_age" json:"max_age"`       // максимальный возраст файла в днях
+	Compress   bool   `yaml:"compress" json:"compress"`     // сжимать старые логи
 }
 
 // Device — информация об устройстве
@@ -114,8 +126,8 @@ type Device struct {
 
 	// Внутренние поля
 	Mu sync.RWMutex `json:"-"`
-	
-	// Флаг что expose уже был опубликован один раз
+
+	// Флаг что expose уже был опубликован один раз (только для runtime)
 	ExposePublished bool `json:"-"`
 }
 
@@ -178,13 +190,18 @@ type BleStatusDevice struct {
 	Exposes     []string          `json:"exposes"`
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
-	Options     map[string]ExposeOption `json:"options"`
+	Options     map[string]ExposeOption `json:"options,omitempty"`
 	Real        bool              `json:"real"`
+	Last        int64             `json:"last"`
 }
 
 // BleStatus — информация обо всех устройствах для топика status/ble
 type BleStatus struct {
-	Devices []BleStatusDevice `json:"devices"`
+	Devices    []BleStatusDevice `json:"devices"`
+	Names      bool              `json:"names"`
+	PermitJoin bool              `json:"permitJoin"`
+	Timestamp  int64             `json:"timestamp"`
+	Version    string            `json:"version"`
 }
 
 type ExposeCommon struct {
@@ -295,29 +312,19 @@ func (d *Device) GetExposeList() []DeviceExpose {
 	d.Mu.RLock()
 	defer d.Mu.RUnlock()
 
-	exposes := []DeviceExpose{
-		{
-			Type:     "sensor",
-			Name:     "RSSI",
-			Property: "rssi",
-			Unit:     "dBm",
-		},
-	}
-
-	if d.Battery != nil {
-		exposes = append(exposes, DeviceExpose{
-			Type:     "sensor",
-			Name:     "Battery",
-			Property: "battery",
-			Unit:     "%",
-			Min:      floatPtr(0),
-			Max:      floatPtr(100),
-		})
-	}
-
 	// Фиксированный порядок полей (чтобы набор exposes не менялся местами)
 	exposeOrder := []string{"temp", "humidity", "battery", "voltage", "pressure", "illuminance"}
 	
+	exposes := make([]DeviceExpose, 0, 1+len(exposeOrder))
+	
+	// RSSI всегда первый
+	exposes = append(exposes, DeviceExpose{
+		Type:     "sensor",
+		Name:     "RSSI",
+		Property: "rssi",
+		Unit:     "dBm",
+	})
+
 	for _, key := range exposeOrder {
 		if val, ok := d.ParsedValues[key]; ok {
 			expose := DeviceExpose{
@@ -336,6 +343,13 @@ func (d *Device) GetExposeList() []DeviceExpose {
 				}
 			case "humidity":
 				expose.Name = "Humidity"
+				if expose.Unit == "" {
+					expose.Unit = "%"
+				}
+				expose.Min = floatPtr(0)
+				expose.Max = floatPtr(100)
+			case "battery":
+				expose.Name = "Battery"
 				if expose.Unit == "" {
 					expose.Unit = "%"
 				}
@@ -387,13 +401,9 @@ func floatPtr(f float64) *float64 {
 	return &f
 }
 
-// GetDeviceTopicName — получить имя для топика MQTT (имя устройства или MAC)
+// GetDeviceTopicName — получить MAC для топика MQTT
 func (c *Config) GetDeviceTopicName(mac string) string {
-	normalizedMAC := NormalizeMACForTopic(mac)
-	if knownDevice, exists := c.KnownDevices[normalizedMAC]; exists && knownDevice.Name != "" {
-		return knownDevice.Name
-	}
-	return normalizedMAC
+	return NormalizeMACForTopic(mac)
 }
 
 // GetPresenceTimeout — получить таймаут присутствия для устройства
