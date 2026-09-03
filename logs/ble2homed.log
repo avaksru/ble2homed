@@ -1,9 +1,0 @@
-{"level":"info","version":"1.0.0","base_prefix":"homed","time":"2026-06-18T14:48:14+03:00","message":"Starting ble2homed"}
-{"level":"info","component":"mqtt","topic":"homed/service/ble","time":"2026-06-18T14:48:14+03:00","message":"LWT configured"}
-{"level":"info","component":"mqtt","broker":"tcp://localhost:1883","client_id":"ble2homed","time":"2026-06-18T14:48:14+03:00","message":"Connecting to MQTT broker"}
-{"level":"info","version":"1.0.0","base_prefix":"homed","time":"2026-06-18T15:03:10+03:00","message":"Starting ble2homed"}
-{"level":"info","component":"mqtt","topic":"homed/service/ble","time":"2026-06-18T15:03:10+03:00","message":"LWT configured"}
-{"level":"info","component":"mqtt","broker":"tcp://localhost:1883","client_id":"ble2homed","time":"2026-06-18T15:03:10+03:00","message":"Connecting to MQTT broker"}
-{"level":"info","version":"1.0.0","base_prefix":"homed","time":"2026-06-18T15:04:48+03:00","message":"Starting ble2homed"}
-{"level":"info","component":"mqtt","topic":"homed/service/ble","time":"2026-06-18T15:04:48+03:00","message":"LWT configured"}
-{"level":"info","component":"mqtt","broker":"tcp://localhost:1883","client_id":"ble2homed","time":"2026-06-18T15:04:48+03:00","message":"Connecting to MQTT broker"}

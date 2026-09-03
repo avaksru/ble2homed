@@ -82,24 +82,10 @@ func ParseBLEDataWithBindKey(adv types.Advertisement, cfg *types.BLEConfig, bind
 		uuid := strings.ToUpper(sd.UUID)
 		beforeCount := len(result)
 
-		// ✅ BTHome v2 FCD2
+		// ✅ BTHome v2 FCD2 (TLV, переменная длина и порядок объектов)
 		if strings.Contains(uuid, "FCD2") {
-			battery := int(sd.Data[4])
-			tempRaw := int16(binary.LittleEndian.Uint16(sd.Data[6:8]))
-			humidityRaw := binary.LittleEndian.Uint16(sd.Data[9:11])
-			
-			temp := float64(tempRaw) / 100.0
-			humidity := float64(humidityRaw) / 100.0
-
-			result["temp"] = types.ParsedValue{Value: temp, Unit: "°C", Type: "temp", Source: "BTHome v2", Timestamp: now}
-			result["humidity"] = types.ParsedValue{Value: humidity, Unit: "%", Type: "humidity", Source: "BTHome v2", Timestamp: now}
-			result["battery"] = types.ParsedValue{Value: battery, Unit: "%", Type: "battery", Source: "BTHome v2", Timestamp: now}
-
-			if len(sd.Data) == 14 {
-				voltageRaw := int16(binary.LittleEndian.Uint16(sd.Data[10:12]))
-				voltage := float64(voltageRaw)
-				if voltageRaw > 1000 { voltage = voltage / 1000.0 }
-				result["voltage"] = types.ParsedValue{Value: voltage, Unit: "V", Type: "voltage", Source: "BTHome v2", Timestamp: now}
+			for k, v := range parseBTHomeData(sd.Data, now) {
+				result[k] = v
 			}
 		}
 
@@ -110,7 +96,7 @@ func ParseBLEDataWithBindKey(adv types.Advertisement, cfg *types.BLEConfig, bind
 			if bindKeyLookup != nil {
 				bindKey = bindKeyLookup(adv.Addr)
 			}
-			
+
 			// Используем новый Xiaomi парсер с поддержкой шифрования
 			xiaomiParsed := ParseXiaomiServiceData(sd.Data, bindKey, now)
 			for k, v := range xiaomiParsed {
@@ -186,7 +172,6 @@ func ParseBLEDataWithBindKey(adv types.Advertisement, cfg *types.BLEConfig, bind
 			//	hex.EncodeToString(sd.Data),
 			//	len(sd.Data))
 		}
-
 
 	}
 
@@ -625,7 +610,6 @@ func parseATCData(data []byte, now time.Time) map[string]types.ParsedValue {
 func parseATCServiceData(data []byte, now time.Time) map[string]types.ParsedValue {
 	result := make(map[string]types.ParsedValue)
 
-	
 	if len(data) < 13 {
 		return result
 	}
@@ -641,7 +625,7 @@ func parseATCServiceData(data []byte, now time.Time) map[string]types.ParsedValu
 		humidity = float64(data[8])
 		battery = int(data[9])
 		voltageRaw = binary.BigEndian.Uint16(data[10:12])
-		
+
 		// В ATC1441 температура в десятых долях градуса!
 		temp := float64(tempRaw) / 10.0
 
@@ -673,11 +657,11 @@ func parseATCServiceData(data []byte, now time.Time) map[string]types.ParsedValu
 		// 12: Счетчик пакетов
 		// 13: Флаги
 		// 14: RSSI
-		
+
 		tempRaw = int16(binary.LittleEndian.Uint16(data[6:8]))
 		humidityRaw := binary.LittleEndian.Uint16(data[8:10])
 		voltageRaw = binary.LittleEndian.Uint16(data[10:12])
-		
+
 		// В PVVX температура в сотых долях, влажность в сотых долях %
 		temp := float64(tempRaw) / 100.0
 		humidity = float64(humidityRaw) / 100.0

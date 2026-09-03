@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,14 +85,14 @@ type Scanner struct {
 	mu             sync.RWMutex
 	running        bool
 	cancel         context.CancelFunc
-	macCache       sync.Map // lock-free кэш нормализованных MAC-адресов
-	advPool        sync.Pool // пул объектов Advertisement
-	bytesPool      sync.Pool // пул байтовых буферов для manufacturer data
+	macCache       sync.Map                  // lock-free кэш нормализованных MAC-адресов
+	advPool        sync.Pool                 // пул объектов Advertisement
+	bytesPool      sync.Pool                 // пул байтовых буферов для manufacturer data
 	lastAdvTime    atomic.Pointer[time.Time] // время последнего пакета (lock-free)
-	lastDeviceTime *shardedTimeMap // сегментированная карта дедубликации
+	lastDeviceTime *shardedTimeMap           // сегментированная карта дедубликации
 	watchdogCancel context.CancelFunc
 	debugEnabled   bool
-	recoveryCount  atomic.Int32 // количество последовательных неудачных восстановлений
+	recoveryCount  atomic.Int32  // количество последовательных неудачных восстановлений
 	restartScan    chan struct{} // канал для принудительного прерывания doScan при recovery
 }
 
@@ -159,9 +160,9 @@ func (s *Scanner) Start(ctx context.Context) error {
 	s.running = true
 	s.mu.Unlock()
 
-		s.logger.Info().
-			Int("filter_count", len(s.filterMACs)).
-			Msg("Starting BLE scanner")
+	s.logger.Info().
+		Int("filter_count", len(s.filterMACs)).
+		Msg("Starting BLE scanner")
 
 	// Запускаем вотчдог для детектирования зависаний
 	watchdogCtx, watchdogCancel := context.WithCancel(ctx)
@@ -248,7 +249,7 @@ func (s *Scanner) scanLoop(ctx context.Context) {
 					s.logger.Debug().Msg("Scan stopped gracefully")
 					return
 				}
-				
+
 				s.logger.Error().Err(err).Msg("Scan error, retrying in 5 seconds")
 				select {
 				case <-ctx.Done():
@@ -258,25 +259,25 @@ func (s *Scanner) scanLoop(ctx context.Context) {
 				}
 			}
 
-	// Пауза между циклами сканирования
-	pauseDuration := time.Duration(s.config.RestartPause) * time.Second
+			// Пауза между циклами сканирования
+			pauseDuration := time.Duration(s.config.RestartPause) * time.Second
 
-	if pauseDuration > 0 {
-		s.logger.Info().
-			Dur("pause", pauseDuration).
-			Msg("Pausing before next scan cycle")
+			if pauseDuration > 0 {
+				s.logger.Info().
+					Dur("pause", pauseDuration).
+					Msg("Pausing before next scan cycle")
 
-		select {
-		case <-ctx.Done():
-			s.logger.Info().Msg("Scan loop stopped by context during pause")
-			return
-		case <-time.After(pauseDuration):
-			continue
-		}
-	}
+				select {
+				case <-ctx.Done():
+					s.logger.Info().Msg("Scan loop stopped by context during pause")
+					return
+				case <-time.After(pauseDuration):
+					continue
+				}
+			}
 
-	// Если пауза 0 - запускаем сканирование сразу же без задержки
-	s.logger.Debug().Msg("No pause between scan cycles, restarting immediately")
+			// Если пауза 0 - запускаем сканирование сразу же без задержки
+			s.logger.Debug().Msg("No pause between scan cycles, restarting immediately")
 		}
 	}
 }
@@ -376,7 +377,21 @@ func (s *Scanner) doScan(ctx context.Context) error {
 		s.mu.RUnlock()
 
 		if handler != nil {
-			handler(*adv)
+			func() {
+				// Защита от паник в пользовательском обработчике: BLE advertising
+				// данные приходят от недоверенных устройств, и ошибка разбора не
+				// должна ронять весь демон (иначе procd уходит в crash loop).
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error().
+							Interface("panic", r).
+							Str("mac", adv.Addr).
+							Bytes("stack", debug.Stack()).
+							Msg("Recovered from panic in advertisement handler")
+					}
+				}()
+				handler(*adv)
+			}()
 		}
 
 		// Возвращаем объект в пул
@@ -602,10 +617,10 @@ func (s *Scanner) watchdogLoop(ctx context.Context) {
 
 				// Шаг 1: Останавливаем сканирование
 				s.mu.Lock()
-				
+
 				// Очищаем кэш дедубликации, чтобы после восстановления не пропустить пакеты
 				s.lastDeviceTime.Cleanup(time.Now().Add(1 * time.Hour)) // удаляем все записи
-				
+
 				if err := s.adapter.StopScan(); err != nil {
 					s.logger.Warn().Err(err).Msg("Failed to stop scan during recovery")
 				}
@@ -615,7 +630,7 @@ func (s *Scanner) watchdogLoop(ctx context.Context) {
 				if err := s.adapter.Enable(); err != nil {
 					s.logger.Error().Err(err).Msg("Failed to re-enable BLE adapter during recovery")
 				}
-				
+
 				// Шаг 3: Ждем стабилизации адаптера
 				time.Sleep(3 * time.Second)
 

@@ -1,5 +1,8 @@
 class BLE extends DeviceService
 {
+    static serviceName = 'ble';
+    static shortName = 'ble';
+
     permitJoin = false;
 
     constructor(controller, instance)
@@ -139,6 +142,64 @@ menu.querySelector('#list').addEventListener('click', function() { this.controll
         this.updatePage();
     }
 
+    showDeviceInfo(device)
+    {
+        loadHTML('deviceInfo.html', this, this.content, function()
+        {
+            let table;
+
+            this.content.querySelector('.name').innerHTML = device.info.name;
+            this.content.querySelector('.edit').addEventListener('click', function() { this.showDeviceEdit(device); }.bind(this));
+            this.content.querySelector('.remove').addEventListener('click', function() { this.showDeviceRemove(device); }.bind(this));
+
+            this.updateDeviceInfo(device);
+            this.updateArrowButtons(device);
+
+            if (!device.info.active)
+            {
+                this.content.querySelector('.exposes').style.display = 'none';
+                return;
+            }
+
+            table = this.content.querySelector('table.exposes');
+            Object.keys(device.endpoints).forEach(endpointId => { device.items(endpointId).forEach(expose => { addExpose(table, device, endpointId, expose); }); });
+
+            this.content.querySelector('.export').addEventListener('click', function()
+            {
+                let data = {exposes: device.info.exposes, real: device.info.real};
+                let item = document.createElement("a");
+
+                if (device.info.options)
+                    data.options = device.info.options;
+
+                if (device.info.bindings)
+                    data.bindings = device.info.bindings;
+
+                if (device.info.availabilityTopic)
+                    data.availabilityTopic = device.info.availabilityTopic;
+
+                if (device.info.availabilityPattern)
+                    data.availabilityPattern = device.info.availabilityPattern;
+
+                item.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'}));
+                item.download = device.info.name + '.json';
+                item.click();
+
+            }.bind(this));
+        });
+    }
+
+    showDeviceRemove(device)
+    {
+        loadHTML('deviceRemove.html', this, modal.querySelector('.data'), function()
+        {
+            modal.querySelector('.name').innerHTML = device.info.name;
+            modal.querySelector('.remove').addEventListener('click', function() { this.serviceCommand({action: 'removeDevice', device: this.names ? device.info.name : device.id}, true); }.bind(this));
+            modal.querySelector('.cancel').addEventListener('click', function() { showModal(false); });
+            showModal(true);
+        });
+    }
+
     showDeviceList()
     {
         if (!Object.keys(this.devices).length)
@@ -147,7 +208,7 @@ menu.querySelector('#list').addEventListener('click', function() { this.controll
             return;
         }
 
-        loadHTML('html/ble/deviceList.html', this, this.content, function()
+        loadHTML('deviceList.html', this, this.content, function()
         {
             let table = this.content.querySelector('.deviceList table');
 
@@ -208,7 +269,7 @@ menu.querySelector('#list').addEventListener('click', function() { this.controll
             add = true;
         }
 
-        loadHTML('html/ble/deviceEdit.html', this, modal.querySelector('.data'), function()
+        loadHTML('deviceEdit.html', this, modal.querySelector('.data'), function()
         {
             modal.querySelector('.name').innerHTML = device.info.name;
             modal.querySelector('input[name="name"]').value = device.info.name;
@@ -259,3 +320,5 @@ menu.querySelector('#list').addEventListener('click', function() { this.controll
         });
     }
 }
+
+registerPlugin(BLE);
