@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -171,7 +172,7 @@ func putBTHomeValue(result map[string]types.ParsedValue, objType byte, objData [
 	case spec.Binary:
 		value = objData[0] != 0
 	case spec.Signed:
-		value = readSigned(objData, scale)
+		value = roundScaled(readSigned(objData, scale), scale)
 	default:
 		f := readUnsigned(objData, scale)
 		if spec.Type == "battery" {
@@ -179,7 +180,8 @@ func putBTHomeValue(result map[string]types.ParsedValue, objType byte, objData [
 			// (publisher ожидает val.Value.(int)).
 			value = int(f)
 		} else {
-			value = f
+			// Округляем, чтобы не публиковать 24.240000000000002 вместо 24.24.
+			value = roundScaled(f, scale)
 		}
 	}
 
@@ -221,4 +223,23 @@ func readUnsigned(data []byte, scale float64) float64 {
 		raw |= uint64(data[i])
 	}
 	return float64(raw) * scale
+}
+
+// roundScaled округляет значение до количества десятичных знаков, заданного
+// масштабом (scale 0.01 → 2 знака, 0.001 → 3, 0.1 → 1). Для scale >= 1
+// (целочисленные датчики, счётчики) округление не нужно.
+//
+// Это убирает артефакты двоичной плавающей точки вида
+// 24.240000000000002 вместо 24.24 (как round(raw*factor, places) в
+// эталонном парсере bthome-ble).
+func roundScaled(v, scale float64) float64 {
+	if scale <= 0 || scale >= 1 {
+		return v
+	}
+	places := 0
+	for s := scale; s < 1 && places < 6; s *= 10 {
+		places++
+	}
+	p := math.Pow10(places)
+	return math.Round(v*p) / p
 }

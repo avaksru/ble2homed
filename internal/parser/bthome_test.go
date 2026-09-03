@@ -2,6 +2,7 @@ package parser
 
 import (
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -236,4 +237,36 @@ func TestPVVXParserRegression(t *testing.T) {
 		t.Errorf("battery = %v (%T), want int(99)", res["battery"].Value, res["battery"].Value)
 	}
 	checkFloat(t, "voltage", res["voltage"].Value, 3.005)
+}
+
+// TestParseBTHomeRoundedValues — проверка чистого вывода значений конечному
+// потребителю (веб/MQTT). Пакет соответствует реальному устройству:
+// temp 24.24 °C, humidity 54.74 %, battery 54 %, voltage 2.637 V.
+func TestParseBTHomeRoundedValues(t *testing.T) {
+	data := []byte{0x40,
+		0x02, 0x78, 0x09, // temp = 0x0978 = 2424 → 24.24 °C
+		0x03, 0x62, 0x15, // humidity = 0x1562 = 5474 → 54.74 %
+		0x01, 0x36, // battery = 54 %
+		0x0C, 0x4D, 0x0A, // voltage = 0x0A4D = 2637 → 2.637 V
+	}
+	got := parseBTHomeData(data, time.Now())
+	if len(got) != 4 {
+		t.Fatalf("expected 4 values, got %d: %+v", len(got), got)
+	}
+
+	f, _ := toFloatHelper(got["temp"].Value)
+	if s := strconv.FormatFloat(f, 'g', -1, 64); s != "24.24" {
+		t.Errorf("temp string = %q, want %q", s, "24.24")
+	}
+	f, _ = toFloatHelper(got["humidity"].Value)
+	if s := strconv.FormatFloat(f, 'g', -1, 64); s != "54.74" {
+		t.Errorf("humidity string = %q, want %q", s, "54.74")
+	}
+	if b, ok := got["battery"].Value.(int); !ok || b != 54 {
+		t.Errorf("battery = %v (%T), want int(54)", got["battery"].Value, got["battery"].Value)
+	}
+	f, _ = toFloatHelper(got["voltage"].Value)
+	if s := strconv.FormatFloat(f, 'g', -1, 64); s != "2.637" {
+		t.Errorf("voltage string = %q, want %q", s, "2.637")
+	}
 }
