@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -122,7 +123,7 @@ func (c *Client) Connect() error {
 
 	c.client = mqtt.NewClient(opts)
 
-	c.logger.Info().Str("broker", c.config.Broker).Str("client_id", c.config.ClientID).Msg("Connecting to MQTT broker")
+	c.logger.Info().Str("broker", sanitizeBrokerURI(c.config.Broker)).Str("client_id", c.config.ClientID).Msg("Connecting to MQTT broker")
 
 	token := c.client.Connect()
 	if token.Wait() && token.Error() != nil {
@@ -263,6 +264,19 @@ func (c *Client) Unsubscribe(topics ...string) error {
 		c.logger.Info().Str("topic", topic).Msg("Unsubscribed from topic")
 	}
 	return nil
+}
+
+// sanitizeBrokerURI убирает userinfo из URI брокера перед логированием,
+// чтобы пароль не попадал в системный лог при использовании
+// формы tcp://user:pass@host:port.
+func sanitizeBrokerURI(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+
+	u.User = nil
+	return u.String()
 }
 
 // IsConnected — проверка подключения
