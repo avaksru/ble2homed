@@ -71,7 +71,8 @@ go build -o ble2homed ./cmd/ble2homed/
   },
   "ble": {
     "scan_interval": 20,
-    "restart_pause": 40
+    "restart_pause": 40,
+    "itag_names": ["iTAG"]
   },
   "web": {
     "enabled": false,

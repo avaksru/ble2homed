@@ -193,25 +193,35 @@ func run(ctx context.Context, cfg *types.Config) error {
 			return
 		}
 
-		// Парсим данные с поддержкой bindkey для Xiaomi устройств
-		parsed := parser.ParseBLEDataWithBindKey(adv, &cfg.BLE, func(mac string) string {
-			normalizedMAC := types.NormalizeMACForTopic(mac)
-			if device, exists := cfg.KnownDevices[normalizedMAC]; exists {
-				return device.BindKey
-			}
-			return ""
-		})
+		// Автообнаружение брелков iTAG (только при включенном permitJoin)
+		isITAG := parser.IsITAGAdvertisement(adv, cfg.BLE.ITAGNames)
+
+		var parsed map[string]types.ParsedValue
+		if isITAG {
+			// Для iTAG не нужен парсинг сенсоров — публикуем только rssi и lastSeen
+			parsed = make(map[string]types.ParsedValue)
+		} else {
+			// Парсим данные с поддержкой bindkey для Xiaomi устройств
+			parsed = parser.ParseBLEDataWithBindKey(adv, &cfg.BLE, func(mac string) string {
+				normalizedMAC := types.NormalizeMACForTopic(mac)
+				if device, exists := cfg.KnownDevices[normalizedMAC]; exists {
+					return device.BindKey
+				}
+				return ""
+			})
+		}
 
 		log.Debug().
 			Str("mac", adv.Addr).
 			Str("name", adv.Name).
 			Int("rssi", adv.RSSI).
+			Bool("itag", isITAG).
 			Int("parsed_count", len(parsed)).
 			Msg("BLE advertisement processed")
 
 		// Публикуем через publisher
 		wasNew := publisher.IsDeviceNew(adv.Addr)
-		if err := publisher.PublishAdvertisement(adv.Addr, adv, parsed); err != nil {
+		if err := publisher.PublishAdvertisement(adv.Addr, adv, parsed, isITAG); err != nil {
 			log.Error().Err(err).Str("mac", adv.Addr).Msg("Failed to publish advertisement")
 			return
 		}

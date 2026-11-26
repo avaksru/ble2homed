@@ -77,6 +77,9 @@ type BLEConfig struct {
 	FilterMACs   []string `yaml:"filter_macs" json:"filter_macs"`
 	Connect      bool     `yaml:"connect" json:"connect"` // Подключаться для GATT операций
 
+	// Автообнаружение брелков iTAG (только при включенном permitJoin)
+	ITAGNames []string `yaml:"itag_names" json:"itag_names"`
+
 	// Оптимизации производительности
 	DisableEddystone        bool `yaml:"disable_eddystone" json:"disable_eddystone"`
 	DisableIBeacon          bool `yaml:"disable_ibeacon" json:"disable_ibeacon"`
@@ -129,6 +132,9 @@ type Device struct {
 
 	// Флаг что expose уже был опубликован один раз (только для runtime)
 	ExposePublished bool `json:"-"`
+
+	// iTAG — брелок, для которого публикуем только rssi и last
+	IsITAG bool `json:"-"`
 }
 
 // ParsedValue — распарсенное значение из advertising
@@ -314,9 +320,9 @@ func (d *Device) GetExposeList() []DeviceExpose {
 
 	// Фиксированный порядок полей (чтобы набор exposes не менялся местами)
 	exposeOrder := []string{"temp", "humidity", "battery", "voltage", "pressure", "illuminance"}
-	
-	exposes := make([]DeviceExpose, 0, 1+len(exposeOrder))
-	
+
+	exposes := make([]DeviceExpose, 0, 2+len(exposeOrder))
+
 	// RSSI всегда первый
 	exposes = append(exposes, DeviceExpose{
 		Type:     "sensor",
@@ -324,6 +330,16 @@ func (d *Device) GetExposeList() []DeviceExpose {
 		Property: "rssi",
 		Unit:     "dBm",
 	})
+
+	// Для iTAG брелков expose только RSSI и LastSeen (UnixTime)
+	if d.IsITAG {
+		exposes = append(exposes, DeviceExpose{
+			Type:     "sensor",
+			Name:     "LastSeen",
+			Property: "last",
+		})
+		return exposes
+	}
 
 	for _, key := range exposeOrder {
 		if val, ok := d.ParsedValues[key]; ok {

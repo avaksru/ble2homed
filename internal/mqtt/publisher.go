@@ -305,46 +305,57 @@ func (p *Publisher) saveKnownDeviceToDatabase(device *types.Device, knownDevice 
 	updated := false
 	for i, existing := range db.Devices {
 		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
+			// Сохраняем флаг iTAG из базы в runtime устройство
+			if existing.ITAG {
+				device.IsITAG = true
+			}
+
 			// Обновляем только изменяемые поля
 			if db.Devices[i].Name != name {
 				db.Devices[i].Name = name
 				updated = true
 			}
-			
+
 			if db.Devices[i].Active != device.IsOnline() {
 				db.Devices[i].Active = device.IsOnline()
 				updated = true
 			}
-			
+
 			if db.Devices[i].Cloud != knownDevice.HOMEdCloud {
 				db.Devices[i].Cloud = knownDevice.HOMEdCloud
 				updated = true
 			}
-			
+
 			if db.Devices[i].Discovery != knownDevice.HOMEdDiscovery {
 				db.Devices[i].Discovery = knownDevice.HOMEdDiscovery
 				updated = true
 			}
-			
+
 			if db.Devices[i].Real != real {
 				db.Devices[i].Real = real
 				updated = true
 			}
-			
+
 			// ✅ НИКОГДА НЕ УДАЛЯЕМ СУЩЕСТВУЮЩИЕ EXPOSES
 			// Добавляем только новые, которых еще нет в списке
 			existingExposes := make(map[string]bool)
 			for _, exp := range existing.Exposes {
 				existingExposes[exp] = true
 			}
-			
+
 			for _, newExp := range exposes {
 				if !existingExposes[newExp] {
 					db.Devices[i].Exposes = append(db.Devices[i].Exposes, newExp)
 					updated = true
 				}
 			}
-			
+
+			// Сохраняем флаг iTAG в базе
+			if db.Devices[i].ITAG != device.IsITAG {
+				db.Devices[i].ITAG = device.IsITAG
+				updated = true
+			}
+
 			break
 		}
 	}
@@ -358,6 +369,7 @@ func (p *Publisher) saveKnownDeviceToDatabase(device *types.Device, knownDevice 
 			ID:        normalizedID,
 			Name:      name,
 			Real:      real,
+			ITAG:      device.IsITAG,
 		})
 	}
 
@@ -419,6 +431,7 @@ type dbDevice struct {
 	ID        string   `json:"id"`
 	Name      string   `json:"name"`
 	Real      bool     `json:"real"`
+	ITAG      bool     `json:"itag,omitempty"`
 }
 
 func (p *Publisher) Config() *types.Config {
@@ -530,6 +543,12 @@ func (p *Publisher) saveDeviceDatabase(db *deviceDatabase) error {
 }
 
 func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
+	// Для iTAG брелков считаем полезными даже отсутствие сенсорных данных —
+	// публикуем только rssi и lastSeen.
+	if device.IsITAG {
+		return true
+	}
+
 	parsedValues := device.GetParsedValues()
 	for key, val := range parsedValues {
 		switch key {
@@ -593,6 +612,11 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 	// 🔄 Если устройство уже есть в БД — обновляем только exposes (добавляем новые)
 	for i, existing := range db.Devices {
 		if types.NormalizeMACForTopic(existing.ID) == normalizedID {
+			// Сохраняем флаг iTAG из базы в runtime устройство
+			if existing.ITAG {
+				device.IsITAG = true
+			}
+
 			existingExposes := make(map[string]bool)
 			for _, exp := range existing.Exposes {
 				existingExposes[exp] = true
@@ -604,6 +628,12 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 					db.Devices[i].Exposes = append(db.Devices[i].Exposes, newExp)
 					updated = true
 				}
+			}
+
+			// Обновляем флаг iTAG в базе если он изменился
+			if db.Devices[i].ITAG != device.IsITAG {
+				db.Devices[i].ITAG = device.IsITAG
+				updated = true
 			}
 
 			if updated {
@@ -645,6 +675,7 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 		ID:        normalizedID,
 		Name:      name,
 		Real:      false,
+		ITAG:      device.IsITAG,
 	})
 
 	if p.config.KnownDevices == nil {
@@ -694,10 +725,15 @@ func (p *Publisher) ShouldProcessAdvertisement(mac string) bool {
 }
 
 // PublishAdvertisement — публикация advertising данных в HOMEd стиле
-func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue) error {
+// isITAG указывает что устройство — брелок iTAG, для которого публикуем только rssi и lastSeen.
+func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, parsed map[string]types.ParsedValue, isITAG bool) error {
 	device := p.GetOrCreateDevice(mac)
 	if device == nil {
 		return fmt.Errorf("cannot create device: max devices limit reached")
+	}
+
+	if isITAG {
+		device.IsITAG = true
 	}
 
 	wasOffline := !device.IsOnline()
@@ -797,8 +833,8 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 		}
 	}
 
-	// Публикуем только если есть полезные данные
-	if hasUsefulData {
+	// Публикуем только если есть полезные данные, либо это iTAG брелок
+	if hasUsefulData || device.IsITAG {
 		// fd/{mac} — текущие значения как плоский JSON
 		fdFlat := device.GetFDFlat()
 		fdBytes, _ := json.Marshal(fdFlat)
@@ -839,20 +875,34 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 		return nil
 	}
 
-	// Собираем только sensor поля (без "last")
+	// Собираем sensor поля. "last" — это timestamp (UnixTime), а не sensor.
 	sensorItems := make([]string, 0)
 	for _, item := range dbEntry.Exposes {
-		if item != "last" && item != "rssi" {
+		if item != "last" {
 			sensorItems = append(sensorItems, item)
 		}
 	}
 
-	// Если нет сенсорных полей — не публикуем
-	if len(sensorItems) == 0 {
-		return nil
+	// Для обычных устройств требуется хотя бы один sensor помимо rssi.
+	// Для iTAG брелков разрешаем публикацию expose только с rssi (и last).
+	if dbEntry.ITAG {
+		if len(sensorItems) == 0 {
+			return nil
+		}
+	} else {
+		hasNonRSSI := false
+		for _, item := range sensorItems {
+			if item != "rssi" {
+				hasNonRSSI = true
+				break
+			}
+		}
+		if !hasNonRSSI {
+			return nil
+		}
 	}
 
-	// Проверяем, изменился ли набор exposes с прошлого раза
+	// Проверяем, изменился ли набор sensor exposes с прошлого раза
 	currentHash := fmt.Sprintf("%v", sensorItems)
 	lastHashObj, _ := lastExposeHash.LoadOrStore(mac, "")
 	lastHash, _ := lastHashObj.(string)
@@ -866,7 +916,8 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 	options := make(map[string]types.ExposeOption, len(dbEntry.Exposes))
 
 	for _, item := range dbEntry.Exposes {
-		if item == "last" {
+		// Для обычных устройств "last" не expose-ится; для iTAG публикуем и "last"
+		if item == "last" && !dbEntry.ITAG {
 			continue
 		}
 		items = append(items, item)
@@ -957,7 +1008,8 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 	options := make(map[string]types.ExposeOption, len(exposes))
 
 	for _, item := range exposes {
-		if item == "last" {
+		// Для iTAG публикуем и last; для обычных устройств last остаётся только в fd
+		if item == "last" && !dbEntry.ITAG {
 			continue
 		}
 
@@ -1014,7 +1066,7 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 	// полный expose из БД частичными данными от первого BLE пакета
 	sensorItems := make([]string, 0)
 	for _, item := range exposes {
-		if item != "last" && item != "rssi" {
+		if item != "last" {
 			sensorItems = append(sensorItems, item)
 		}
 	}
