@@ -41,3 +41,30 @@ func TestDeviceGetExposeListRegular(t *testing.T) {
 		t.Errorf("expected second expose property=temperature, got %s", exposes[1].Property)
 	}
 }
+
+func TestDeviceGetExposeListIncludesBTHomeMetrics(t *testing.T) {
+	device := NewDevice("aa:bb:cc:dd:ee:ff")
+	device.SetParsedValue("co2", ParsedValue{Value: 800, Type: "co2", Source: "BTHome v2"})
+	device.SetParsedValue("tvoc", ParsedValue{Value: 40, Type: "tvoc", Source: "BTHome v2"})
+	device.SetParsedValue("illuminance", ParsedValue{Value: 100.0, Type: "illuminance", Unit: "lx", Source: "BTHome v2"})
+	device.SetParsedValue("motion", ParsedValue{Value: true, Type: "binary", Source: "BTHome v2"})
+
+	exposes := device.GetExposeList()
+	got := make(map[string]string, len(exposes))
+	for _, expose := range exposes {
+		got[expose.Property] = expose.Unit
+	}
+
+	for property, wantUnit := range map[string]string{
+		"co2":         "ppm",
+		"tvoc":        "µg/m³",
+		"illuminance": "lx",
+	} {
+		if got[property] != wantUnit {
+			t.Errorf("%s unit = %q, want %q", property, got[property], wantUnit)
+		}
+	}
+	if _, ok := got["motion"]; ok {
+		t.Error("binary BTHome attributes should not be exposed as numeric metrics")
+	}
+}

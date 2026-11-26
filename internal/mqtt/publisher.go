@@ -551,6 +551,10 @@ func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
 
 	parsedValues := device.GetParsedValues()
 	for key, val := range parsedValues {
+		if val.Value != nil && val.Source == "BTHome v2" && val.Type != "binary" {
+			return true
+		}
+
 		switch key {
 		case "temp", "humidity", "battery", "pressure", "illuminance":
 			if val.Value != nil {
@@ -566,13 +570,13 @@ func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
 func (p *Publisher) deduplicateDevices(devices []dbDevice) []dbDevice {
 	seen := make(map[string]bool)
 	result := make([]dbDevice, 0, len(devices))
-	
+
 	for _, device := range devices {
 		normalizedID := types.NormalizeMACForTopic(device.ID)
 		if normalizedID == "" {
 			continue
 		}
-		
+
 		if !seen[normalizedID] {
 			seen[normalizedID] = true
 			result = append(result, device)
@@ -582,7 +586,7 @@ func (p *Publisher) deduplicateDevices(devices []dbDevice) []dbDevice {
 				Msg("Removing duplicate device from database")
 		}
 	}
-	
+
 	return result
 }
 
@@ -775,11 +779,9 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	// Логируем распарсенные полезные данные
 	usefulFields := map[string]interface{}{}
 	for key, val := range parsed {
-		switch key {
-		case "temp", "humidity", "battery", "pressure", "illuminance":
-			if val.Value != nil {
-				usefulFields[key] = val.Value
-			}
+		if val.Value != nil && (val.Source == "BTHome v2" && val.Type != "binary" ||
+			key == "temp" || key == "humidity" || key == "battery" || key == "pressure" || key == "illuminance") {
+			usefulFields[key] = val.Value
 		}
 	}
 
@@ -822,16 +824,7 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 	topicName := p.config.GetDeviceTopicName(mac)
 
 	// Проверяем есть ли полезные данные для публикации
-	hasUsefulData := false
-	for key, val := range parsed {
-		switch key {
-		case "temp", "humidity", "battery", "pressure", "illuminance":
-			if val.Value != nil {
-				hasUsefulData = true
-				break
-			}
-		}
-	}
+	hasUsefulData := p.hasUsefulDeviceData(device)
 
 	// Публикуем только если есть полезные данные, либо это iTAG брелок
 	if hasUsefulData || device.IsITAG {
@@ -922,28 +915,10 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 		}
 		items = append(items, item)
 
-		unit := ""
-		switch item {
-		case "temperature":
-			unit = "°C"
-		case "humidity":
-			unit = "%"
-		case "battery":
-			unit = "%"
-		case "voltage":
-			unit = "V"
-		case "pressure":
-			unit = "hPa"
-		case "illuminance":
-			unit = "lx"
-		case "rssi":
-			unit = "dBm"
-		}
-
 		options[item] = types.ExposeOption{
 			State: "measurement",
 			Type:  "sensor",
-			Unit:  unit,
+			Unit:  types.UnitForProperty(item),
 		}
 	}
 
@@ -1015,24 +990,8 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 
 		items = append(items, item)
 
-		unit := ""
+		unit := types.UnitForProperty(item)
 		class := ""
-		switch item {
-		case "temperature":
-			unit = "°C"
-		case "humidity":
-			unit = "%"
-		case "battery":
-			unit = "%"
-		case "voltage":
-			unit = "V"
-		case "pressure":
-			unit = "hPa"
-		case "illuminance":
-			unit = "lx"
-		case "rssi":
-			unit = "dBm"
-		}
 
 		options[item] = types.ExposeOption{
 			Class: class,

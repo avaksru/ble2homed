@@ -1,6 +1,7 @@
 package types
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -318,10 +319,9 @@ func (d *Device) GetExposeList() []DeviceExpose {
 	d.Mu.RLock()
 	defer d.Mu.RUnlock()
 
-	// Фиксированный порядок полей (чтобы набор exposes не менялся местами)
+	// Keep common sensor fields first, then append any other parsed BTHome metrics.
 	exposeOrder := []string{"temp", "humidity", "battery", "voltage", "pressure", "illuminance"}
-
-	exposes := make([]DeviceExpose, 0, 2+len(exposeOrder))
+	exposes := make([]DeviceExpose, 0, 2+len(d.ParsedValues))
 
 	// RSSI всегда первый
 	exposes = append(exposes, DeviceExpose{
@@ -341,53 +341,109 @@ func (d *Device) GetExposeList() []DeviceExpose {
 		return exposes
 	}
 
+	addExpose := func(key string, val ParsedValue) {
+		if val.Value == nil || val.Source == "BTHome v2" && val.Type == "binary" {
+			return
+		}
+
+		expose := DeviceExpose{
+			Type:     "sensor",
+			Name:     key,
+			Property: key,
+			Unit:     val.Unit,
+		}
+
+		switch val.Type {
+		case "temp":
+			expose.Name = "Temperature"
+			expose.Property = "temperature"
+		case "humidity":
+			expose.Name = "Humidity"
+			if val.Unit == "" {
+				expose.Unit = "%"
+			}
+			expose.Min = floatPtr(0)
+			expose.Max = floatPtr(100)
+		case "battery":
+			expose.Name = "Battery"
+			if val.Unit == "" {
+				expose.Unit = "%"
+			}
+			expose.Min = floatPtr(0)
+			expose.Max = floatPtr(100)
+		case "pressure":
+			expose.Name = "Pressure"
+			if val.Unit == "" {
+				expose.Unit = "hPa"
+			}
+		case "illuminance":
+			expose.Name = "Illuminance"
+			if val.Unit == "" {
+				expose.Unit = "lx"
+			}
+		}
+		if expose.Unit == "" {
+			expose.Unit = UnitForProperty(expose.Property)
+		}
+		exposes = append(exposes, expose)
+	}
+
+	seen := make(map[string]bool, len(exposeOrder))
 	for _, key := range exposeOrder {
 		if val, ok := d.ParsedValues[key]; ok {
-			expose := DeviceExpose{
-				Type:     "sensor",
-				Name:     key,
-				Property: key,
-				Unit:     val.Unit,
-			}
-
-			switch val.Type {
-			case "temp":
-				expose.Name = "Temperature"
-				expose.Property = "temperature"
-				if expose.Unit == "" {
-					expose.Unit = "°C"
-				}
-			case "humidity":
-				expose.Name = "Humidity"
-				if expose.Unit == "" {
-					expose.Unit = "%"
-				}
-				expose.Min = floatPtr(0)
-				expose.Max = floatPtr(100)
-			case "battery":
-				expose.Name = "Battery"
-				if expose.Unit == "" {
-					expose.Unit = "%"
-				}
-				expose.Min = floatPtr(0)
-				expose.Max = floatPtr(100)
-			case "pressure":
-				expose.Name = "Pressure"
-				if expose.Unit == "" {
-					expose.Unit = "hPa"
-				}
-			case "illuminance":
-				expose.Name = "Illuminance"
-				if expose.Unit == "" {
-					expose.Unit = "lx"
-				}
-			}
-
-			exposes = append(exposes, expose)
+			addExpose(key, val)
+			seen[key] = true
 		}
 	}
 
+	otherKeys := make([]string, 0, len(d.ParsedValues))
+	for key, val := range d.ParsedValues {
+		if !seen[key] && val.Source == "BTHome v2" && val.Type != "binary" {
+			otherKeys = append(otherKeys, key)
+		}
+	}
+	sort.Strings(otherKeys)
+	for _, key := range otherKeys {
+		addExpose(key, d.ParsedValues[key])
+	}
+
 	return exposes
+}
+
+// UnitForProperty returns the standard unit used when a parsed value is no longer available.
+func UnitForProperty(property string) string {
+	switch property {
+	case "temp", "temperature", "dew_point":
+		return "°C"
+	case "humidity", "humidity_1", "battery", "moisture", "moisture_1":
+		return "%"
+	case "voltage":
+		return "V"
+	case "pressure":
+		return "hPa"
+	case "illuminance":
+		return "lx"
+	case "weight":
+		return "kg"
+	case "weight_lb":
+		return "lb"
+	case "energy":
+		return "kWh"
+	case "power":
+		return "W"
+	case "pm2_5", "pm10", "tvoc":
+		return "µg/m³"
+	case "co2":
+		return "ppm"
+	case "rotation":
+		return "°"
+	case "distance":
+		return "mm"
+	case "rssi":
+		return "dBm"
+	default:
+		return ""
+	}
 }
 
 // GetHomedExpose — получить стандартный expose для HOMEd

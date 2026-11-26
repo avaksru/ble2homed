@@ -127,6 +127,29 @@ func TestParseBTHomePressureLux(t *testing.T) {
 	checkFloat(t, "illuminance", got["illuminance"].Value, 100.0)
 }
 
+func TestParseBTHomeAirQualityMetrics(t *testing.T) {
+	data := []byte{0x40,
+		0x12, 0x20, 0x03, // CO2: 800 ppm
+		0x13, 0xF4, 0x01, // TVOC: 500 µg/m³
+	}
+
+	got := parseBTHomeData(data, time.Now())
+	for key, wantUnit := range map[string]string{
+		"co2":  "ppm",
+		"tvoc": "µg/m³",
+	} {
+		value, ok := got[key]
+		if !ok {
+			t.Fatalf("missing %s metric: %+v", key, got)
+		}
+		if value.Unit != wantUnit {
+			t.Errorf("%s unit = %q, want %q", key, value.Unit, wantUnit)
+		}
+	}
+	checkFloat(t, "co2", got["co2"].Value, 800)
+	checkFloat(t, "tvoc", got["tvoc"].Value, 500)
+}
+
 // TestParseBTHomeMACFlag — флаг MAC: 6 байт после заголовка пропускаются.
 func TestParseBTHomeMACFlag(t *testing.T) {
 	data := []byte{
