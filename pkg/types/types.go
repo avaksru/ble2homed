@@ -233,6 +233,33 @@ func NewDevice(mac string) *Device {
 	}
 }
 
+func ExposeTypeForProperty(property string) string {
+	if separator := strings.LastIndexByte(property, '_'); separator > 0 {
+		suffix := property[separator+1:]
+		isNumericSuffix := suffix != ""
+		for _, digit := range suffix {
+			if digit < '0' || digit > '9' {
+				isNumericSuffix = false
+				break
+			}
+		}
+		if isNumericSuffix {
+			property = property[:separator]
+		}
+	}
+
+	switch property {
+	case "generic", "power_binary", "opening", "battery_binary", "battery_charging",
+		"co_binary", "cold", "connectivity", "door", "garage_door", "gas_binary",
+		"heat", "light_binary", "lock", "moisture_binary", "motion", "moving",
+		"occupancy", "plug", "presence", "problem", "running", "safety", "smoke",
+		"sound", "tamper", "vibration", "window":
+		return "binary_sensor"
+	default:
+		return "sensor"
+	}
+}
+
 // UpdateLastSeen — обновить время последнего обнаружения
 func (d *Device) UpdateLastSeen() {
 	d.Mu.Lock()
@@ -305,6 +332,8 @@ func (d *Device) GetFDFlat() map[string]interface{} {
 		if val.Value != nil {
 			if key == "temp" {
 				result["temperature"] = val.Value
+			} else if strings.HasPrefix(key, "temp_") {
+				result["temperature"+strings.TrimPrefix(key, "temp")] = val.Value
 			} else {
 				result[key] = val.Value
 			}
@@ -319,7 +348,7 @@ func (d *Device) GetExposeList() []DeviceExpose {
 	d.Mu.RLock()
 	defer d.Mu.RUnlock()
 
-	// Keep common sensor fields first, then append any other parsed BTHome metrics.
+	// Keep common sensor fields first, then append other parsed BTHome attributes.
 	exposeOrder := []string{"temp", "humidity", "battery", "voltage", "pressure", "illuminance"}
 	exposes := make([]DeviceExpose, 0, 2+len(d.ParsedValues))
 
@@ -342,7 +371,7 @@ func (d *Device) GetExposeList() []DeviceExpose {
 	}
 
 	addExpose := func(key string, val ParsedValue) {
-		if val.Value == nil || val.Source == "BTHome v2" && val.Type == "binary" {
+		if val.Value == nil || val.Source == "BTHome v2" && (val.Type == "event" || val.Type == "device_info" || val.Type == "packet_id") {
 			return
 		}
 
@@ -352,11 +381,20 @@ func (d *Device) GetExposeList() []DeviceExpose {
 			Property: key,
 			Unit:     val.Unit,
 		}
+		if val.Source == "BTHome v2" && val.Type == "binary" {
+			expose.Type = "binary_sensor"
+		}
 
 		switch val.Type {
 		case "temp":
-			expose.Name = "Temperature"
-			expose.Property = "temperature"
+			if key == "temp" {
+				expose.Name = "Temperature"
+				expose.Property = "temperature"
+			} else if strings.HasPrefix(key, "temp_") {
+				suffix := strings.TrimPrefix(key, "temp")
+				expose.Name = "Temperature" + suffix
+				expose.Property = "temperature" + suffix
+			}
 		case "humidity":
 			expose.Name = "Humidity"
 			if val.Unit == "" {
@@ -398,7 +436,7 @@ func (d *Device) GetExposeList() []DeviceExpose {
 
 	otherKeys := make([]string, 0, len(d.ParsedValues))
 	for key, val := range d.ParsedValues {
-		if !seen[key] && val.Source == "BTHome v2" && val.Type != "binary" {
+		if !seen[key] && val.Source == "BTHome v2" && val.Type != "event" && val.Type != "device_info" && val.Type != "packet_id" {
 			otherKeys = append(otherKeys, key)
 		}
 	}
@@ -412,12 +450,33 @@ func (d *Device) GetExposeList() []DeviceExpose {
 
 // UnitForProperty returns the standard unit used when a parsed value is no longer available.
 func UnitForProperty(property string) string {
+	if separator := strings.LastIndexByte(property, '_'); separator > 0 {
+		suffix := property[separator+1:]
+		if suffix != "" {
+			isNumericSuffix := true
+			for _, digit := range suffix {
+				if digit < '0' || digit > '9' {
+					isNumericSuffix = false
+					break
+				}
+			}
+			if isNumericSuffix && unitForBaseProperty(property[:separator]) != "" {
+				return unitForBaseProperty(property[:separator])
+			}
+		}
+	}
+	return unitForBaseProperty(property)
+}
+
+func unitForBaseProperty(property string) string {
 	switch property {
-	case "temp", "temperature", "dew_point":
+	case "temp", "temp_1", "temp_2", "temp_3", "temperature", "dew_point":
 		return "°C"
 	case "humidity", "humidity_1", "battery", "moisture", "moisture_1":
 		return "%"
 	case "voltage":
+		return "V"
+	case "voltage_1":
 		return "V"
 	case "pressure":
 		return "hPa"
@@ -427,18 +486,50 @@ func UnitForProperty(property string) string {
 		return "kg"
 	case "weight_lb":
 		return "lb"
-	case "energy":
+	case "energy", "energy_32":
 		return "kWh"
-	case "power":
+	case "power", "power_signed":
 		return "W"
 	case "pm2_5", "pm10", "tvoc":
 		return "µg/m³"
 	case "co2":
 		return "ppm"
-	case "rotation":
+	case "rotation", "direction":
 		return "°"
 	case "distance":
 		return "mm"
+	case "distance_m":
+		return "m"
+	case "duration":
+		return "s"
+	case "current", "current_signed":
+		return "A"
+	case "speed", "speed_signed":
+		return "m/s"
+	case "volume", "volume_storage", "water":
+		return "L"
+	case "volume_16_l":
+		return "L"
+	case "volume_ml":
+		return "mL"
+	case "volume_flow_rate":
+		return "m3/hr"
+	case "gas", "gas_32":
+		return "m3"
+	case "acceleration", "acceleration_signed":
+		return "m/s²"
+	case "gyroscope":
+		return "°/s"
+	case "conductivity":
+		return "µS/cm"
+	case "precipitation":
+		return "mm"
+	case "rotational_speed":
+		return "rpm"
+	case "frequency":
+		return "Hz"
+	case "progress":
+		return "%"
 	case "rssi":
 		return "dBm"
 	default:
@@ -456,7 +547,7 @@ func (d *Device) GetHomedExpose() HomedExpose {
 		items[i] = expose.Property
 		options[expose.Property] = ExposeOption{
 			State: "measurement",
-			Type:  "sensor",
+			Type:  expose.Type,
 			Unit:  expose.Unit,
 		}
 	}

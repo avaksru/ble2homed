@@ -17,6 +17,23 @@ func TestUpdateDeviceDatabaseAddsBTHomeMetricsOnlyWhenPermitJoinEnabled(t *testi
 			Unit:   "ppm",
 			Source: "BTHome v2",
 		})
+		device.SetParsedValue("distance", types.ParsedValue{
+			Value:  12,
+			Type:   "distance",
+			Unit:   "mm",
+			Source: "BTHome v2",
+		})
+		device.SetParsedValue("distance_2", types.ParsedValue{
+			Value:  7.8,
+			Type:   "distance",
+			Unit:   "m",
+			Source: "BTHome v2",
+		})
+		device.SetParsedValue("motion", types.ParsedValue{
+			Value:  true,
+			Type:   "binary",
+			Source: "BTHome v2",
+		})
 		return device
 	}
 
@@ -73,6 +90,12 @@ func TestUpdateDeviceDatabaseAddsBTHomeMetricsOnlyWhenPermitJoinEnabled(t *testi
 		}
 		if !hasCO2 {
 			t.Fatalf("CO2 metric missing from device exposes: %v", db.Devices[0].Exposes)
+		}
+		if got := db.Devices[0].Options["distance_2"].Unit; got != "m" {
+			t.Errorf("persisted second distance unit = %q, want m", got)
+		}
+		if got := db.Devices[0].Options["motion"].Type; got != "binary_sensor" {
+			t.Errorf("persisted motion type = %q, want binary_sensor", got)
 		}
 	})
 }

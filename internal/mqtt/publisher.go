@@ -424,14 +424,15 @@ type deviceDatabase struct {
 }
 
 type dbDevice struct {
-	Active    bool     `json:"active"`
-	Cloud     bool     `json:"cloud"`
-	Discovery bool     `json:"discovery"`
-	Exposes   []string `json:"exposes"`
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Real      bool     `json:"real"`
-	ITAG      bool     `json:"itag,omitempty"`
+	Active    bool                          `json:"active"`
+	Cloud     bool                          `json:"cloud"`
+	Discovery bool                          `json:"discovery"`
+	Exposes   []string                      `json:"exposes"`
+	Options   map[string]types.ExposeOption `json:"options,omitempty"`
+	ID        string                        `json:"id"`
+	Name      string                        `json:"name"`
+	Real      bool                          `json:"real"`
+	ITAG      bool                          `json:"itag,omitempty"`
 }
 
 func (p *Publisher) Config() *types.Config {
@@ -551,7 +552,8 @@ func (p *Publisher) hasUsefulDeviceData(device *types.Device) bool {
 
 	parsedValues := device.GetParsedValues()
 	for key, val := range parsedValues {
-		if val.Value != nil && val.Source == "BTHome v2" && val.Type != "binary" {
+		if val.Value != nil && val.Source == "BTHome v2" &&
+			val.Type != "event" && val.Type != "device_info" && val.Type != "packet_id" {
 			return true
 		}
 
@@ -611,7 +613,8 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 		normalizedID = device.MAC
 	}
 
-	exposes := device.GetHomedExpose().Common.Items
+	expose := device.GetHomedExpose()
+	exposes := expose.Common.Items
 
 	// 🔄 Если устройство уже есть в БД — обновляем только exposes (добавляем новые)
 	for i, existing := range db.Devices {
@@ -630,6 +633,15 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 			for _, newExp := range exposes {
 				if !existingExposes[newExp] {
 					db.Devices[i].Exposes = append(db.Devices[i].Exposes, newExp)
+					updated = true
+				}
+			}
+			if db.Devices[i].Options == nil {
+				db.Devices[i].Options = make(map[string]types.ExposeOption)
+			}
+			for property, option := range expose.Common.Options {
+				if current, ok := db.Devices[i].Options[property]; !ok || current != option {
+					db.Devices[i].Options[property] = option
 					updated = true
 				}
 			}
@@ -676,6 +688,7 @@ func (p *Publisher) updateDeviceDatabase(device *types.Device) (bool, error) {
 		Cloud:     false,
 		Discovery: false,
 		Exposes:   exposes,
+		Options:   expose.Common.Options,
 		ID:        normalizedID,
 		Name:      name,
 		Real:      false,
@@ -779,7 +792,7 @@ func (p *Publisher) PublishAdvertisement(mac string, adv types.Advertisement, pa
 	// Логируем распарсенные полезные данные
 	usefulFields := map[string]interface{}{}
 	for key, val := range parsed {
-		if val.Value != nil && (val.Source == "BTHome v2" && val.Type != "binary" ||
+		if val.Value != nil && (val.Source == "BTHome v2" && val.Type != "device_info" && val.Type != "packet_id" ||
 			key == "temp" || key == "humidity" || key == "battery" || key == "pressure" || key == "illuminance") {
 			usefulFields[key] = val.Value
 		}
@@ -825,9 +838,16 @@ func (p *Publisher) publishHomed(mac string, adv types.Advertisement, parsed map
 
 	// Проверяем есть ли полезные данные для публикации
 	hasUsefulData := p.hasUsefulDeviceData(device)
+	hasEvent := false
+	for _, value := range parsed {
+		if value.Value != nil && value.Source == "BTHome v2" && value.Type == "event" {
+			hasEvent = true
+			break
+		}
+	}
 
 	// Публикуем только если есть полезные данные, либо это iTAG брелок
-	if hasUsefulData || device.IsITAG {
+	if hasUsefulData || hasEvent || device.IsITAG {
 		// fd/{mac} — текущие значения как плоский JSON
 		fdFlat := device.GetFDFlat()
 		fdBytes, _ := json.Marshal(fdFlat)
@@ -915,11 +935,7 @@ func (p *Publisher) publishExpose(mac string, device *types.Device) error {
 		}
 		items = append(items, item)
 
-		options[item] = types.ExposeOption{
-			State: "measurement",
-			Type:  "sensor",
-			Unit:  types.UnitForProperty(item),
-		}
+		options[item] = getExposeOption(dbEntry.Options, item)
 	}
 
 	expose := types.HomedExpose{
@@ -990,15 +1006,7 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 
 		items = append(items, item)
 
-		unit := types.UnitForProperty(item)
-		class := ""
-
-		options[item] = types.ExposeOption{
-			Class: class,
-			State: "measurement",
-			Type:  "sensor",
-			Unit:  unit,
-		}
+		options[item] = getExposeOption(dbEntry.Options, item)
 	}
 
 	expose := types.HomedExpose{
@@ -1032,6 +1040,20 @@ func (p *Publisher) PublishStartupExpose(mac string) error {
 	lastExposeHash.Store(mac, fmt.Sprintf("%v", sensorItems))
 
 	return nil
+}
+
+func getExposeOption(stored map[string]types.ExposeOption, property string) types.ExposeOption {
+	option := stored[property]
+	if option.State == "" {
+		option.State = "measurement"
+	}
+	if option.Type == "" {
+		option.Type = types.ExposeTypeForProperty(property)
+	}
+	if option.Unit == "" {
+		option.Unit = types.UnitForProperty(property)
+	}
+	return option
 }
 
 // publishDeviceOffline — публикация offline статуса устройства

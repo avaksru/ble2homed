@@ -1,9 +1,13 @@
 package parser
 
 import (
+	"encoding/hex"
+	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/avaksru/ble2homed/pkg/types"
 )
@@ -18,8 +22,8 @@ import (
 //	  bit 1    — первые 6 байт после заголовка содержат MAC-адрес
 //	  bit 2    — trigger based device
 //	  bits 5-7 — версия формата (для v2 должна быть ровно 2)
-//	data[1:]  — один или несколько объектов `[тип][данные_фиксированной_длины]`.
-//	  Длина данных определяется типом объекта (см. bthomeObjectSpecs).
+//	data[1:]  — один или несколько объектов `[тип][данные]`.
+//	  Длина данных определяется типом объекта; raw/text содержат байт длины.
 //	  Объекты могут идти в произвольном порядке, длина пакета переменная.
 //
 // Парсер не паникует на коротких/повреждённых пакетах и возвращает только те
@@ -60,12 +64,26 @@ func parseBTHomeData(data []byte, now time.Time) map[string]types.ParsedValue {
 		}
 
 		objStart := offset + 1
-		objEnd := objStart + spec.Length
+		dataStart := objStart
+		dataLength := spec.Length
+		if spec.Command {
+			if objStart >= len(data) {
+				break
+			}
+			dataLength = int(data[objStart]&0x1F) + 2
+		} else if spec.LengthPrefixed {
+			if objStart >= len(data) {
+				break
+			}
+			dataLength = int(data[objStart])
+			dataStart++
+		}
+		objEnd := dataStart + dataLength
 		if objEnd > len(data) {
 			// Объект обрезан — пакет повреждён, останавливаем разбор.
 			break
 		}
-		objData := data[objStart:objEnd]
+		objData := data[dataStart:objEnd]
 		offset = objEnd
 
 		putBTHomeValue(result, objType, objData, now)
@@ -76,13 +94,20 @@ func parseBTHomeData(data []byte, now time.Time) map[string]types.ParsedValue {
 
 // bthomeObject — описание одного типа объекта BTHome v2.
 type bthomeObject struct {
-	Length int     // размер данных объекта в байтах
-	Unit   string  // единица измерения ("" если не применимо)
-	Type   string  // тип в понятиях проекта (temp/humidity/battery и т.д.)
-	Key    string  // ключ в result (совместим с publisher/types)
-	Signed bool    // данные трактуются как знаковое целое
-	Scale  float64 // множитель для перевода в физическую единицу
-	Binary bool    // 0/1 — false/true
+	Length          int     // размер данных объекта в байтах
+	Unit            string  // единица измерения ("" если не применимо)
+	Type            string  // тип в понятиях проекта (temp/humidity/battery и т.д.)
+	Key             string  // ключ в result (совместим с publisher/types)
+	Signed          bool    // данные трактуются как знаковое целое
+	Scale           float64 // множитель для перевода в физическую единицу
+	Binary          bool    // 0/1 — false/true
+	LengthPrefixed  bool    // за Length следует байт длины данных
+	Text            bool    // данные представляют текст
+	Raw             bool    // данные публикуются в hex
+	Timestamp       bool    // значение — Unix timestamp в секундах
+	Command         bool    // длина команды включает opcode и аргументы
+	EventKind       string  // тип события
+	FirmwareVersion bool    // данные — компоненты версии firmware
 }
 
 // bthomeObjectSpecs — таблица типов объектов BTHome v2.
@@ -136,28 +161,64 @@ var bthomeObjectSpecs = map[byte]bthomeObject{
 	0x2C: {Length: 1, Type: "binary", Key: "vibration", Binary: true},
 	0x2D: {Length: 1, Type: "binary", Key: "window", Binary: true},
 	// 0x2E/0x2F — 1-байтные влажность/влажность почвы (отдельные датчики)
-	0x2E: {Length: 1, Unit: "%", Type: "humidity", Key: "humidity_1"},
-	0x2F: {Length: 1, Unit: "%", Type: "moisture", Key: "moisture_1"},
-	0x3C: {Length: 2, Type: "dimmer", Key: "dimmer"},
-	0x3D: {Length: 2, Type: "count", Key: "count_2"},
-	0x3E: {Length: 4, Type: "count", Key: "count_4"},
+	0x2E: {Length: 1, Unit: "%", Type: "humidity", Key: "humidity"},
+	0x2F: {Length: 1, Unit: "%", Type: "moisture", Key: "moisture"},
+	0x3A: {Length: 1, Type: "event", Key: "button_event", EventKind: "button"},
+	0x3B: {Type: "event", Key: "command_event", Command: true},
+	0x3C: {Length: 2, Type: "event", Key: "dimmer_event", EventKind: "dimmer"},
+	0x3D: {Length: 2, Type: "count", Key: "count"},
+	0x3E: {Length: 4, Type: "count", Key: "count"},
 	0x3F: {Length: 2, Unit: "°", Type: "rotation", Key: "rotation", Signed: true, Scale: 0.1},
 	0x40: {Length: 2, Unit: "mm", Type: "distance", Key: "distance"},
-	// 0xF0/F1/F2 — device information: разбор пропускаем, длина известна
-	0xF0: {Length: 2, Type: "device_type_id", Key: "_device_type_id"},
-	0xF1: {Length: 4, Type: "firmware_version", Key: "_firmware_version"},
-	0xF2: {Length: 3, Type: "firmware_version", Key: "_firmware_version"},
+	0x41: {Length: 2, Unit: "m", Type: "distance", Key: "distance", Scale: 0.1},
+	0x42: {Length: 3, Unit: "s", Type: "duration", Key: "duration", Scale: 0.001},
+	0x43: {Length: 2, Unit: "A", Type: "current", Key: "current", Scale: 0.001},
+	0x44: {Length: 2, Unit: "m/s", Type: "speed", Key: "speed", Scale: 0.01},
+	0x45: {Length: 2, Unit: "°C", Type: "temp", Key: "temp", Signed: true, Scale: 0.1},
+	0x46: {Length: 1, Type: "uv_index", Key: "uv_index", Scale: 0.1},
+	0x47: {Length: 2, Unit: "L", Type: "volume", Key: "volume", Scale: 0.1},
+	0x48: {Length: 2, Unit: "mL", Type: "volume", Key: "volume"},
+	0x49: {Length: 2, Unit: "m3/hr", Type: "volume_flow_rate", Key: "volume_flow_rate", Scale: 0.001},
+	0x4A: {Length: 2, Unit: "V", Type: "voltage", Key: "voltage", Scale: 0.1},
+	0x4B: {Length: 3, Unit: "m3", Type: "gas", Key: "gas", Scale: 0.001},
+	0x4C: {Length: 4, Unit: "m3", Type: "gas", Key: "gas", Scale: 0.001},
+	0x4D: {Length: 4, Unit: "kWh", Type: "energy", Key: "energy", Scale: 0.001},
+	0x4E: {Length: 4, Unit: "L", Type: "volume", Key: "volume", Scale: 0.001},
+	0x4F: {Length: 4, Unit: "L", Type: "water", Key: "water", Scale: 0.001},
+	0x50: {Length: 4, Type: "timestamp", Key: "timestamp", Timestamp: true},
+	0x51: {Length: 2, Unit: "m/s²", Type: "acceleration", Key: "acceleration", Scale: 0.001},
+	0x52: {Length: 2, Unit: "°/s", Type: "gyroscope", Key: "gyroscope", Scale: 0.001},
+	0x53: {LengthPrefixed: true, Type: "text", Key: "text", Text: true},
+	0x54: {LengthPrefixed: true, Type: "raw", Key: "raw", Raw: true},
+	0x55: {Length: 4, Unit: "L", Type: "volume_storage", Key: "volume_storage", Scale: 0.001},
+	0x56: {Length: 2, Unit: "µS/cm", Type: "conductivity", Key: "conductivity"},
+	0x57: {Length: 1, Unit: "°C", Type: "temp", Key: "temp", Signed: true},
+	0x58: {Length: 1, Unit: "°C", Type: "temp", Key: "temp", Signed: true, Scale: 0.35},
+	0x59: {Length: 1, Type: "count", Key: "count", Signed: true},
+	0x5A: {Length: 2, Type: "count", Key: "count", Signed: true},
+	0x5B: {Length: 4, Type: "count", Key: "count", Signed: true},
+	0x5C: {Length: 4, Unit: "W", Type: "power", Key: "power", Signed: true, Scale: 0.01},
+	0x5D: {Length: 2, Unit: "A", Type: "current", Key: "current", Signed: true, Scale: 0.001},
+	0x5E: {Length: 2, Unit: "°", Type: "direction", Key: "direction", Scale: 0.01},
+	0x5F: {Length: 2, Unit: "mm", Type: "precipitation", Key: "precipitation", Scale: 0.1},
+	0x60: {Length: 1, Type: "channel", Key: "channel"},
+	0x61: {Length: 2, Unit: "rpm", Type: "rotational_speed", Key: "rotational_speed"},
+	0x62: {Length: 4, Unit: "m/s", Type: "speed", Key: "speed", Signed: true, Scale: 0.000001},
+	0x63: {Length: 4, Unit: "m/s²", Type: "acceleration", Key: "acceleration", Signed: true, Scale: 0.000001},
+	0x64: {Length: 1, Type: "light_level", Key: "light_level"},
+	0x65: {Length: 1, Type: "settings_revision", Key: "settings_revision"},
+	0x66: {Length: 2, Unit: "Hz", Type: "frequency", Key: "frequency", Scale: 0.01},
+	0x67: {Length: 1, Unit: "%", Type: "progress", Key: "progress"},
+	// 0xF0/F1/F2 — device type and firmware version information.
+	0xF0: {Length: 2, Type: "device_info", Key: "device_type_id"},
+	0xF1: {Length: 4, Type: "device_info", Key: "firmware_version", FirmwareVersion: true},
+	0xF2: {Length: 3, Type: "device_info", Key: "firmware_version", FirmwareVersion: true},
 }
 
 // putBTHomeValue раскладывает данные объекта в result.
 func putBTHomeValue(result map[string]types.ParsedValue, objType byte, objData []byte, now time.Time) {
 	spec, ok := bthomeObjectSpecs[objType]
-	if !ok || spec.Length != len(objData) {
-		return
-	}
-
-	// Служебные объекты (packet id, device info) не публикуем как значения.
-	if spec.Type == "packet_id" || strings.HasPrefix(spec.Key, "_") {
+	if !ok || !spec.LengthPrefixed && !spec.Command && spec.Length != len(objData) {
 		return
 	}
 
@@ -171,6 +232,27 @@ func putBTHomeValue(result map[string]types.ParsedValue, objType byte, objData [
 	switch {
 	case spec.Binary:
 		value = objData[0] != 0
+	case spec.EventKind != "" || spec.Command:
+		var ok bool
+		value, ok = parseBTHomeEvent(spec, objData)
+		if !ok {
+			return
+		}
+	case spec.Text:
+		if !utf8.Valid(objData) {
+			return
+		}
+		value = string(objData)
+	case spec.Raw:
+		value = hex.EncodeToString(objData)
+	case spec.Timestamp:
+		value = time.Unix(int64(readUnsigned(objData, 1)), 0).UTC()
+	case spec.FirmwareVersion:
+		parts := make([]string, len(objData))
+		for i, part := range objData {
+			parts[len(objData)-i-1] = strconv.Itoa(int(part))
+		}
+		value = strings.Join(parts, ".")
 	case spec.Signed:
 		value = roundScaled(readSigned(objData, scale), scale)
 	default:
@@ -185,13 +267,95 @@ func putBTHomeValue(result map[string]types.ParsedValue, objType byte, objData [
 		}
 	}
 
-	result[spec.Key] = types.ParsedValue{
+	key := spec.Key
+	for index := 2; ; index++ {
+		if _, exists := result[key]; !exists {
+			break
+		}
+		key = fmt.Sprintf("%s_%d", spec.Key, index)
+	}
+
+	result[key] = types.ParsedValue{
 		Value:     value,
 		Unit:      spec.Unit,
 		Type:      spec.Type,
 		Source:    "BTHome v2",
 		Timestamp: now,
 	}
+}
+
+func parseBTHomeEvent(spec bthomeObject, data []byte) (string, bool) {
+	if spec.Command {
+		if len(data) < 2 || len(data) != int(data[0]&0x1F)+2 {
+			return "", false
+		}
+		opcode := data[1]
+		arguments := data[2:]
+		switch opcode {
+		case 0:
+			return "off", true
+		case 1:
+			return "on", true
+		case 2:
+			return "toggle", true
+		case 3:
+			return formatStepEvent("step up", arguments), true
+		case 4:
+			return formatStepEvent("step down", arguments), true
+		default:
+			return fmt.Sprintf("command 0x%02x (%s)", opcode, hex.EncodeToString(arguments)), true
+		}
+	}
+
+	eventID := data[0]
+	if eventID == 0 {
+		return "", false
+	}
+
+	if spec.EventKind == "button" {
+		if event, ok := map[byte]string{
+			0x01: "press",
+			0x02: "double_press",
+			0x03: "triple_press",
+			0x04: "long_press",
+			0x05: "long_double_press",
+			0x06: "long_triple_press",
+			0x80: "hold_press",
+			0x81: "hold_release",
+		}[eventID]; ok {
+			return event, true
+		}
+		return fmt.Sprintf("button event 0x%02x", eventID), true
+	}
+
+	if spec.EventKind == "dimmer" {
+		if len(data) != 2 {
+			return "", false
+		}
+		direction := ""
+		switch eventID {
+		case 0x01:
+			direction = "rotate left"
+		case 0x02:
+			direction = "rotate right"
+		default:
+			return fmt.Sprintf("dimmer event 0x%02x", eventID), true
+		}
+		return formatStepEvent(direction, data[1:]), true
+	}
+
+	return "", false
+}
+
+func formatStepEvent(action string, steps []byte) string {
+	if len(steps) == 0 {
+		return action
+	}
+	unit := "steps"
+	if steps[0] == 1 {
+		unit = "step"
+	}
+	return fmt.Sprintf("%s %d %s", action, steps[0], unit)
 }
 
 // readSigned — знаковое little-endian целое с масштабированием.
