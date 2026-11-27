@@ -23,6 +23,7 @@ func DefaultConfig() *types.Config {
 			Adapter:     "hci0",
 			ScanTimeout: "0s", // 0 = непрерывное сканирование
 			Connect:     false,
+			ITAGNames:   []string{"iTAG"},
 		},
 		Publish: types.PublishConfig{
 			BasePrefix:     "/ble",

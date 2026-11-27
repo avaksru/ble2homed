@@ -32,6 +32,22 @@ const (
 // BindKeyLookup — функция для получения bindkey по MAC-адресу
 type BindKeyLookup func(mac string) string
 
+// IsITAGAdvertisement определяет брелок iTAG по локальному имени в рекламном пакете.
+// Сравнение регистронезависимое. Пустые имена и пустой список itagNames игнорируются.
+func IsITAGAdvertisement(adv types.Advertisement, itagNames []string) bool {
+	name := strings.TrimSpace(adv.Name)
+	if name == "" || len(itagNames) == 0 {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, candidate := range itagNames {
+		if lower == strings.ToLower(strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseBLEData — полный парсинг BLE advertising данных
 func ParseBLEData(adv types.Advertisement, cfg *types.BLEConfig) map[string]types.ParsedValue {
 	return ParseBLEDataWithBindKey(adv, cfg, nil)

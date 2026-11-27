@@ -3,12 +3,45 @@ class BLE extends DeviceService
     static serviceName = 'ble';
     static shortName = 'ble';
 
+    // Иконка Bluetooth вместо несуществующего в HOMEd web класса icon-enable
+    static permitJoinIcon = 'mdi-bluetooth';
+
+    // Мигание вдвое медленнее статусного светодиода homed-zigbee (500 мс):
+    // 1000 мс на состояние, полный цикл 2 с — легко отличить от привязки ZigBee
+    static permitJoinBlinkInterval = 1000;
+
     permitJoin = false;
+    permitJoinBlink = false;
 
     constructor(controller, instance)
     {
         super(controller, 'ble', instance);
         this.intervals.push(setInterval(function() { this.updateLastSeen(); }.bind(this), 100));
+        this.intervals.push(setInterval(function() { this.blinkPermitJoin(); }.bind(this), BLE.permitJoinBlinkInterval));
+    }
+
+    blinkPermitJoin()
+    {
+        if (!this.permitJoin || this.controller.service != this.service)
+            return;
+
+        this.permitJoinBlink = !this.permitJoinBlink;
+        this.updatePermitJoinIndicator();
+    }
+
+    updatePermitJoinIndicator()
+    {
+        let item = document.querySelector('#permitJoin');
+        if (!item)
+            return;
+
+        // Пока Join включён — оранжевый мигающий индикатор, иначе серый
+        let active = this.permitJoin && !this.permitJoinBlink;
+        let color = active ? 'warning' : 'shade';
+
+        item.className = color;
+        item.querySelector('i').className = BLE.permitJoinIcon + ' ' + color;
+        item.title = this.permitJoin ? 'Permit Join: ON' : 'Permit Join: OFF';
     }
 
     updateLastSeen()
@@ -40,7 +73,7 @@ class BLE extends DeviceService
 updatePage()
     {
         document.querySelector('#serviceVersion').innerHTML = this.version ? 'BLE ' + this.version : '<i>unknown</i>';
-        document.querySelector('#permitJoin i').className = 'icon-enable ' + (this.permitJoin ? 'warning' : 'shade');
+        this.updatePermitJoinIndicator();
     }
 
     parseMessage(list, message)
@@ -51,6 +84,10 @@ updatePage()
 
             this.names = message.names;
             this.version = message.version;
+            this.permitJoin = message.permitJoin === true;
+
+            if (!this.permitJoin)
+                this.permitJoinBlink = false;
 
             message.devices.forEach(device =>
             {
@@ -113,11 +150,11 @@ showPage(data)
         menu.innerHTML  = '<span id="list"><i class="icon-list"></i> List</span>';
         menu.innerHTML += '<span id="add"><i class="icon-plus"></i> Add</span>';
         menu.innerHTML += '<span id="import" class="mobileHidden"><i class="icon-upload"></i> Import</span>';
-        menu.innerHTML += '<span id="permitJoin"><i class="icon-enable"></i> Permit Join</span>';
+        menu.innerHTML += '<span id="permitJoin"><i class="' + BLE.permitJoinIcon + '"></i> Permit Join</span>';
 
 menu.querySelector('#list').addEventListener('click', function() { this.controller.showPage(this.service); }.bind(this));
         menu.querySelector('#add').addEventListener('click', function() { this.showDeviceEdit(); }.bind(this));
-        menu.querySelector('#permitJoin').addEventListener('click', function() { menu.querySelector('#permitJoin i').className = 'icon-enable'; this.serviceCommand({action: 'togglePermitJoin'}); }.bind(this));
+        menu.querySelector('#permitJoin').addEventListener('click', function() { menu.querySelector('#permitJoin i').className = BLE.permitJoinIcon; this.serviceCommand({action: 'togglePermitJoin'}); }.bind(this));
 
         menu.querySelector('#import').addEventListener('click', function()
         {
